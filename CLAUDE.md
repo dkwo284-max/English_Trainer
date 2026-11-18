@@ -2,7 +2,7 @@
 
 ## 브랜치
 - 모든 작업은 `main`에서 직접 하고 커밋도 `main`에 합니다.
-- `main`에 push하면 Cloudflare에 자동 배포되므로, push 전에 사용자에게 확인합니다.
+- `main`에 push하면 Cloudflare에 자동 배포됨. 사용자가 "물어보지 말고 수정한 건 푸시해"라고 해서(2026-11-19) 이 저장소는 수정·커밋 후 확인 없이 바로 push합니다.
 
 ## 로컬 실행
 - `npx --yes wrangler@4 dev --port 8790` → http://127.0.0.1:8790

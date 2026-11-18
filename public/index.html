@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<title>English Trainer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230f766e'/><text x='32' y='43' font-size='30' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'>Ei</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <div class="login-card">
+    <div class="logo">Ei</div>
+    <h1>English Trainer</h1>
+    <p class="muted">NZ 생활 구어체 스피킹 · 영작 · 기본동사 · 5형식</p>
+    <form id="loginForm">
+      <label for="codeInput">내 학습 코드</label>
+      <input id="codeInput" inputmode="text" autocomplete="off" autocapitalize="off" maxlength="24" placeholder="예: 0109" required>
+      <button class="btn primary big" type="submit">시작하기</button>
+    </form>
+    <p class="small muted">같은 코드를 입력하면 어느 기기에서든 학습 이력이 이어집니다.<br>남이 짐작하기 어려운 코드(4~24자)를 쓰는 게 안전해요.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <button class="code-chip" id="codeChip" title="코드 변경"><span class="dot" id="syncDot"></span><span id="codeLabel"></span></button>
+    <div class="top-title" id="topTitle">홈</div>
+    <button class="icon-btn" id="toolsBtn" aria-label="단어 검색·원어민 변환">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    </button>
+  </header>
+  <main id="view" class="view"></main>
+  <nav class="tabbar" id="tabbar">
+    <button data-tab="home"><svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span>홈</span></button>
+    <button data-tab="speak"><svg viewBox="0 0 24 24"><path d="M4 5h16v10H8l-4 4z"/></svg><span>스피킹</span></button>
+    <button data-tab="write"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg><span>영작</span></button>
+    <button data-tab="train"><svg viewBox="0 0 24 24"><path d="M6 6v12M18 6v12M3 9v6M21 9v6M6 12h12"/></svg><span>훈련</span></button>
+    <button data-tab="vault"><svg viewBox="0 0 24 24"><path d="M5 4h14v17l-7-4-7 4z"/></svg><span>복습</span><b class="badge" id="dueBadge" hidden></b></button>
+  </nav>
+</div>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true">
+    <div class="sheet-handle"></div>
+    <button class="icon-btn sheet-x" data-close aria-label="닫기">✕</button>
+    <div id="sheetBody"></div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="data/scenarios.js"></script>
+<script src="data/drills.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

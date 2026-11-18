@@ -135,6 +135,55 @@ async function callGemini(env, prompt, task) {
   throw new Error(lastErr || "AI 실패");
 }
 
+// ── Cloudflare Workers AI (같은 계정·키 불필요·빠름) ───────────
+const CF_MODELS = ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.1-8b-instruct-fast"];
+function parseJsonLoose(text) {
+  const t = String(text || "").replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
+  try { return JSON.parse(t); } catch {}
+  const i = t.indexOf("{"), j = t.lastIndexOf("}");
+  if (i >= 0 && j > i) { try { return JSON.parse(t.slice(i, j + 1)); } catch {} }
+  throw new Error("형식 오류");
+}
+const VALID = {
+  word: (r) => r && typeof r.ko === "string" && r.ko,
+  naturalize: (r) => r && typeof r.best === "string" && r.best,
+  correct: (r) => r && typeof r.score === "number",
+  drill: (r) => r && Array.isArray(r.items) && r.items.length,
+};
+async function callCF(env, prompt, task) {
+  if (!env.AI) throw new Error("no-ai-binding");
+  let lastErr;
+  for (const model of CF_MODELS) {
+    try {
+      const out = await Promise.race([
+        env.AI.run(model, {
+          messages: [{ role: "system", content: SYS }, { role: "user", content: prompt + "\nReturn ONLY the JSON object." }],
+          max_tokens: 1200, temperature: 0.5,
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 10000)),
+      ]);
+      const text = typeof out === "string" ? out : out?.response ?? out?.choices?.[0]?.message?.content ?? "";
+      const res = typeof text === "object" ? text : parseJsonLoose(text);
+      if (!VALID[task] || VALID[task](res)) return res;
+      lastErr = new Error("내용 부족");
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("workers-ai 실패");
+}
+
+// 빠른 작업은 Workers AI 와 Gemini 를 동시에 호출해 먼저 온 유효한 답을 쓴다
+async function callAI(env, prompt, task) {
+  const t0 = Date.now();
+  const tag = (via) => (r) => { if (r && typeof r === "object") { r._via = via; r._ms = Date.now() - t0; } return r; };
+  if (!FAST_TASKS.has(task)) return tag("gemini")(await callGemini(env, prompt, task));
+  const runs = [];
+  if (env.AI) runs.push(callCF(env, prompt, task).then(tag("workers-ai")));
+  if (env.GEMINI_API_KEY) runs.push(callGemini(env, prompt, task).then((r) => { if (VALID[task] && !VALID[task](r)) throw new Error("내용 부족"); return tag("gemini")(r); }));
+  if (!runs.length) throw new Error("AI 설정 없음");
+  try { return await Promise.any(runs); }
+  catch (e) { throw new Error((e.errors || []).map((x) => x.message).join(" / ") || "AI 실패"); }
+}
+
 async function bump(env, key, limit) {
   const n = parseInt((await env.STORE.get(key)) || "0", 10);
   if (n >= limit) return false;
@@ -144,7 +193,7 @@ async function bump(env, key, limit) {
 
 async function handleAI(request, env) {
   if (request.method !== "POST") return json({ error: "method" }, 405);
-  if (!env.GEMINI_API_KEY) return json({ error: "AI 키가 설정되지 않았습니다 (Cloudflare 비밀 GEMINI_API_KEY)" }, 503);
+  if (!env.GEMINI_API_KEY && !env.AI) return json({ error: "AI 설정이 없습니다 (Cloudflare 비밀 GEMINI_API_KEY 또는 Workers AI 바인딩)" }, 503);
   const code = await readCode(request);
   if (!code) return json({ error: "코드가 필요합니다" }, 400);
   let body;
@@ -167,7 +216,7 @@ async function handleAI(request, env) {
     if (!(await bump(env, `ai:${day}:${ck}`, AI_PER_CODE_PER_DAY))) return json({ error: `오늘 AI 사용 한도(${AI_PER_CODE_PER_DAY}회)를 다 썼습니다` }, 429);
   }
   try {
-    const result = await callGemini(env, make(body), body.task);
+    const result = await callAI(env, make(body), body.task);
     if (wkey && env.STORE && result && result.ko) await env.STORE.put(wkey, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 90 });
     return json({ result });
   } catch (e) {
@@ -203,7 +252,7 @@ export default {
       if (pathname === "/api/state") return await handleState(request, env);
       if (pathname === "/api/ai") return await handleAI(request, env);
       if (pathname === "/api/dict") return await handleDict(request);
-      if (pathname === "/api/health") return json({ ok: true, kv: !!env.STORE, ai: !!env.GEMINI_API_KEY });
+      if (pathname === "/api/health") return json({ ok: true, kv: !!env.STORE, ai: !!env.GEMINI_API_KEY, wai: !!env.AI });
     } catch (e) {
       return json({ error: "서버 오류: " + e.message }, 500);
     }

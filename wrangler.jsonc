@@ -9,5 +9,7 @@
   "assets": { "directory": "./public", "binding": "ASSETS" },
   // id 를 비워 두면 wrangler 가 첫 배포 때 KV 를 자동으로 만든다. 자동 생성이 안 되는 환경이면
   // Cloudflare 대시보드 → Storage & Databases → KV 에서 'english-trainer' 를 만들고 그 ID 를 아래에 넣는다.
-  "kv_namespaces": [{ "binding": "STORE" }]
+  "kv_namespaces": [{ "binding": "STORE" }],
+  // Workers AI (무료 일일 한도 내). 단어·변환·교정은 Gemini 와 동시에 호출해 먼저 온 답을 사용
+  "ai": { "binding": "AI" }
 }

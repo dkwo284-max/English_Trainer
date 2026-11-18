@@ -4,7 +4,10 @@
 //  - /api/ai    : Gemini 호출 (대화 생성·원어민 변환·영작 교정·단어 풀이). 키는 Worker 비밀(GEMINI_API_KEY)
 //  - /api/dict  : 무료 영어 사전(dictionaryapi.dev) 프록시 — 미국·영국 발음 음성 링크
 
-const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"];
+// 빠른 작업(단어·변환·교정)은 Flash-Lite 먼저, 긴 생성(대화·영작 세트)은 Flash 먼저. 생각(thinking) 토큰은 꺼서 지연을 줄임
+const FAST = ["gemini-flash-lite-latest", "gemini-flash-latest"];
+const SLOW = ["gemini-flash-latest", "gemini-flash-lite-latest"];
+const FAST_TASKS = new Set(["word", "naturalize", "correct", "drill"]);
 const AI_PER_CODE_PER_DAY = 80;   // 코드 하나가 하루에 쓸 수 있는 AI 호출
 const AI_TOTAL_PER_DAY = 400;     // 앱 전체 하루 상한 (무료 등급 보호)
 const MAX_STATE_BYTES = 900_000;
@@ -88,8 +91,8 @@ JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of t
 
   word: ({ word }) => `Explain the English word or phrase "${word}" for a Korean learner.
 JSON: {"word":"${word}","ipaUS":"/.../","ipaUK":"/.../","pos":"part of speech","ko":"Korean meanings (short, comma separated)","nuance":"Korean note on nuance/usage, mention NZ/UK/US differences if any",
-"examples":[{"en":"natural spoken example","ko":"Korean"}] (4 examples, everyday conversation, one with a NZ setting),
-"collocations":["common collocations (max 5)"],"drill":[{"ko":"Korean sentence that should be said in English using the word","en":"model answer"}] (3 items)}`,
+"examples":[{"en":"natural spoken example","ko":"Korean"}] (3 short examples, everyday conversation, one with a NZ setting),
+"collocations":["common collocations (max 4)"],"drill":[{"ko":"Korean sentence that should be said in English using the word","en":"model answer"}] (2 items)}`,
 
   writing: ({ topic }) => `Create a 10-line spoken dialogue (A/B alternating, A first, 5 lines each) about: "${topic}", set in everyday Auckland life.
 This is for English composition practice: the learner sees the Korean and must say it in English.
@@ -100,19 +103,24 @@ Spoken, everyday, NZ life flavour.
 JSON: {"items":[{"en":"...","ko":"...","note":"Korean: which meaning/structure is used","parts":"for sentence patterns: label parts like S | V | O | C, else empty"}]}`,
 };
 
-async function callGemini(env, prompt) {
+async function callGemini(env, prompt, task) {
   let lastErr = "";
-  for (const model of MODELS) {
+  const fast = FAST_TASKS.has(task);
+  for (const model of fast ? FAST : SLOW) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYS }] },
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.8, responseMimeType: "application/json" },
-        }),
-      });
+      let r;
+      try {
+        r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: "POST",
+          signal: AbortSignal.timeout(fast ? 12000 : 30000),
+          headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: SYS }] },
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.7, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: fast ? 1500 : 4000 },
+          }),
+        });
+      } catch { lastErr = "시간 초과"; break; }   // 느린 모델은 기다리지 않고 바로 다음 모델로
       if (r.ok) {
         const d = await r.json();
         const text = d?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
@@ -120,7 +128,7 @@ async function callGemini(env, prompt) {
         catch { lastErr = "AI 응답 형식 오류"; continue; }
       }
       lastErr = `Gemini ${r.status}`;
-      if (r.status === 429 || r.status >= 500) { await new Promise((res) => setTimeout(res, 800 * (attempt + 1))); continue; }
+      if (r.status === 429 || r.status >= 500) { await new Promise((res) => setTimeout(res, 500)); continue; }
       break;
     }
   }
@@ -146,6 +154,12 @@ async function handleAI(request, env) {
   // 입력 길이 제한
   for (const [k, v] of Object.entries(body)) if (typeof v === "string" && v.length > 1500) body[k] = v.slice(0, 1500);
 
+  // 단어 풀이는 모든 사용자가 공유하는 캐시(개인정보 없음) — 같은 단어는 즉시 응답, AI 한도도 쓰지 않음
+  const wkey = body.task === "word" ? "wc:" + String(body.word || "").toLowerCase().trim().slice(0, 60) : "";
+  if (wkey && env.STORE) {
+    const hit = await env.STORE.get(wkey);
+    if (hit) return json({ result: JSON.parse(hit), cached: true });
+  }
   const day = nzToday();
   if (env.STORE) {
     const ck = await codeKey(code, env);
@@ -153,7 +167,8 @@ async function handleAI(request, env) {
     if (!(await bump(env, `ai:${day}:${ck}`, AI_PER_CODE_PER_DAY))) return json({ error: `오늘 AI 사용 한도(${AI_PER_CODE_PER_DAY}회)를 다 썼습니다` }, 429);
   }
   try {
-    const result = await callGemini(env, make(body));
+    const result = await callGemini(env, make(body), body.task);
+    if (wkey && env.STORE && result && result.ko) await env.STORE.put(wkey, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 90 });
     return json({ result });
   } catch (e) {
     return json({ error: `AI가 잠시 바쁩니다 (${e.message}). 잠시 후 다시 시도해 주세요` }, 502);

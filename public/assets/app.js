@@ -265,39 +265,47 @@ function openTools(tab = "word", prefill = "") {
 const openWord = (w) => openTools("word", w);
 
 async function wordLookup(word, out) {
-  out.innerHTML = `<div class="card"><span class="spinner"></span> 찾는 중…</div>`;
   const simple = /^[a-z' -]{1,40}$/i.test(word);
-  const [dict, exp] = await Promise.allSettled([
-    simple ? api("/api/dict?w=" + encodeURIComponent(word.toLowerCase())).then((r) => r.data) : Promise.resolve({}),
-    ai("word", { word }),
-  ]);
-  const d = dict.status === "fulfilled" ? dict.value || {} : {};
-  const x = exp.status === "fulfilled" ? exp.value || {} : null;
-  if (!x && !(d.defs || []).length) { out.innerHTML = `<div class="card empty">찾지 못했어요. ${exp.reason ? esc(exp.reason.message) : ""}</div>`; return; }
-  const au = d.audio || {};
-  const audioBtn = (reg, label, lang) => au[reg] ? `<button class="btn sm" data-audio="${esc(au[reg])}">🔊 ${label} 원어민</button>` : `<button class="btn sm" data-say="${esc(word)}" data-lang="${lang}">🔊 ${label}</button>`;
-  out.innerHTML = `<div class="card">
-    <div class="row spread"><h2>${esc(x?.word || word)}</h2><span class="tag">${esc(x?.pos || d.defs?.[0]?.pos || "")}</span></div>
+  const key = word.toLowerCase();
+  out.innerHTML = `<div class="card"><span class="spinner"></span> 찾는 중…</div>`;
+  const cached = wordCache.get(key);
+  const dictP = cached ? Promise.resolve(cached.d) : simple ? api("/api/dict?w=" + encodeURIComponent(key)).then((r) => r.data || {}).catch(() => ({})) : Promise.resolve({});
+  const aiP = cached?.x ? Promise.resolve(cached.x) : ai("word", { word }).catch((e) => ({ _err: e.message }));
+  const draw = (d, x, pending) => {
+    const ok = x && !x._err;
+    if (!ok && !(d.defs || []).length && !pending) { out.innerHTML = `<div class="card empty">찾지 못했어요. ${x?._err ? esc(x._err) : ""}</div>`; return; }
+    const au = d.audio || {};
+    const audioBtn = (reg, label, lang) => au[reg] ? `<button class="btn sm" data-audio="${esc(au[reg])}">🔊 ${label} 원어민</button>` : `<button class="btn sm" data-say="${esc(word)}" data-lang="${lang}">🔊 ${label}</button>`;
+    out.innerHTML = `<div class="card">
+    <div class="row spread"><h2>${esc(ok ? x.word || word : word)}</h2><span class="tag">${esc((ok && x.pos) || d.defs?.[0]?.pos || "")}</span></div>
     <div class="row wrap" style="margin:6px 0 10px;gap:12px">
-      <span><span class="small muted">US</span> <span class="ipa">${esc(x?.ipaUS || d.phon?.us || "")}</span></span>
-      <span><span class="small muted">UK</span> <span class="ipa">${esc(x?.ipaUK || d.phon?.uk || "")}</span></span></div>
+      <span><span class="small muted">US</span> <span class="ipa">${esc((ok && x.ipaUS) || d.phon?.us || "")}</span></span>
+      <span><span class="small muted">UK</span> <span class="ipa">${esc((ok && x.ipaUK) || d.phon?.uk || "")}</span></span></div>
     <div class="row wrap">${audioBtn("us", "미국", "en-US")}${audioBtn("uk", "영국", "en-GB")}${au.au ? audioBtn("au", "호주", "en-AU") : ""}</div>
-    ${x ? `<p style="font-size:17px;font-weight:700;margin:12px 0 4px">${esc(x.ko)}</p><p class="small muted" style="margin:0">${esc(x.nuance || "")}</p>` : ""}
-    ${!x && d.defs ? `<p class="small muted">AI 설명을 불러오지 못해 영영 풀이만 보여 드려요.</p>` + d.defs.map((f) => `<p class="small"><b>${esc(f.pos)}</b> ${esc(f.def)}</p>`).join("") : ""}
-    ${x?.collocations?.length ? `<div class="label" style="margin-top:12px">자주 같이 쓰는 말</div><div class="row wrap">${x.collocations.map((c) => `<span class="tag">${esc(c)}</span>`).join("")}</div>` : ""}
+    ${ok ? `<p style="font-size:17px;font-weight:700;margin:12px 0 4px">${esc(x.ko)}</p><p class="small muted" style="margin:0">${esc(x.nuance || "")}</p>` : ""}
+    ${!ok ? ((d.defs || []).map((f) => `<p class="small"><b>${esc(f.pos)}</b> ${esc(f.def)}</p>`).join("") + (pending ? `<p class="small muted"><span class="spinner"></span> 한국어 뜻·예문 만드는 중…</p>` : `<p class="small muted">AI 설명을 불러오지 못해 영영 풀이만 보여 드려요. (${esc(x?._err || "")})</p>`)) : ""}
+    ${ok && x.collocations?.length ? `<div class="label" style="margin-top:12px">자주 같이 쓰는 말</div><div class="row wrap">${x.collocations.map((c) => `<span class="tag">${esc(c)}</span>`).join("")}</div>` : ""}
   </div>
-  ${x?.examples?.length ? `<div class="card"><div class="label">예문</div>${x.examples.map((e) => `<div class="item"><div class="en">${tappable(e.en)}</div><div class="ko">${esc(e.ko)}</div><div class="acts">${sayBtns(e.en)}${starBtn({ en: e.en, ko: e.ko, key: word, src: "단어 " + word })}</div></div>`).join("")}</div>` : ""}
-  ${x?.drill?.length ? `<div class="card"><div class="label">이 단어로 말해 보기</div><div id="wDrill"></div></div>` : ""}
-  <button class="btn big" id="wSave">${S.words.some((w) => w.w === word.toLowerCase()) ? "★ 단어장에 있음" : "☆ 단어장에 저장"}</button>`;
-  out.querySelectorAll("[data-audio]").forEach((b) => (b.onclick = () => new Audio(b.dataset.audio).play().catch(() => speak(word))));
-  if (x?.drill?.length) quiz($("#wDrill"), x.drill.map((q) => ({ ...q, src: "단어 " + word })), { kind: "drill", compact: true });
-  $("#wSave").onclick = () => {
-    const w = word.toLowerCase();
-    if (!S.words.some((v) => v.w === w)) { S.words.unshift({ id: "w:" + w, w, ko: x?.ko || d.defs?.[0]?.def || "", at: new Date().toISOString() }); log("words"); toast("단어장에 저장했어요"); }
-    $("#wSave").textContent = "★ 단어장에 있음";
+  ${ok && x.examples?.length ? `<div class="card"><div class="label">예문</div>${x.examples.map((e) => `<div class="item"><div class="en">${tappable(e.en)}</div><div class="ko">${esc(e.ko)}</div><div class="acts">${sayBtns(e.en)}${starBtn({ en: e.en, ko: e.ko, key: word, src: "단어 " + word })}</div></div>`).join("")}</div>` : ""}
+  ${ok && x.drill?.length ? `<div class="card"><div class="label">이 단어로 말해 보기</div><div id="wDrill"></div></div>` : ""}
+  <button class="btn big" id="wSave">${S.words.some((w) => w.w === key) ? "★ 단어장에 있음" : "☆ 단어장에 저장"}</button>`;
+    out.querySelectorAll("[data-audio]").forEach((b) => (b.onclick = () => new Audio(b.dataset.audio).play().catch(() => speak(word))));
+    if (ok && x.drill?.length) quiz($("#wDrill"), x.drill.map((q) => ({ ...q, src: "단어 " + word })), { kind: "drill", compact: true });
+    $("#wSave").onclick = () => {
+      if (!S.words.some((v) => v.w === key)) { S.words.unshift({ id: "w:" + key, w: key, ko: (ok && x.ko) || d.defs?.[0]?.def || "", at: new Date().toISOString() }); log("words"); toast("단어장에 저장했어요"); }
+      $("#wSave").textContent = "★ 단어장에 있음";
+    };
   };
-  if (!S.words.some((v) => v.w === word.toLowerCase())) {} // 저장은 사용자가 선택
+  // 사전(빠름)을 먼저 보여 주고, AI 설명이 오면 채운다
+  const d = await dictP;
+  let finished = false;
+  if ((d.defs || []).length || (d.audio && (d.audio.us || d.audio.uk))) draw(d, null, true);
+  const x = await aiP;
+  finished = true;
+  if (x && !x._err) wordCache.set(key, { d, x });
+  draw(d, x, false);
 }
+const wordCache = new Map();
 
 async function convert(text, out) {
   if (!text) return;

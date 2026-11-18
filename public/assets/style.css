@@ -166,3 +166,6 @@ mark.key { background: var(--key); color: var(--key-ink); border-radius: 5px; pa
 .login-card form { grid-template-columns: minmax(0, 1fr); }
 .login-card input { width: 100%; min-width: 0; }
 html, body { overflow-x: hidden; }
+.stat-link { border: 0; text-align: left; cursor: pointer; font: inherit; color: inherit; width: 100%; }
+.stat-link:active { transform: scale(.98); }
+.stat-link span { color: var(--accent); font-weight: 600; }

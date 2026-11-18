@@ -452,7 +452,7 @@ function renderHome(v) {
     <div class="stats" style="margin-top:12px">
       <div class="stat"><b>🔥 ${streak()}</b><span>연속 학습일</span></div>
       <div class="stat"><b>${totalSentences}</b><span>누적 연습 문장</span></div>
-      <div class="stat"><b>${S.saved.length}</b><span>저장 문장</span></div>
+      <button class="stat stat-link" data-go-saved aria-label="저장 문장 보기"><b>${S.saved.length}</b><span>저장 문장 ›</span></button>
     </div>
     <div class="card">
       <div class="row spread"><h3>오늘의 할 일</h3><span class="small muted">${esc(today())}</span></div>
@@ -471,6 +471,7 @@ function renderHome(v) {
       <div class="row"><input class="text" id="qConv" placeholder="예: 우리 애가 오늘 좀 피곤해 보여요"><button class="btn primary" id="qConvGo">변환</button></div>
     </div>`;
   v.querySelectorAll("[data-go]").forEach((t) => (t.onclick = () => go(t.dataset.go)));
+  v.querySelector("[data-go-saved]").onclick = () => { vaultMode = "saved"; vaultQ = ""; go("vault"); };
   $("#qConvGo").onclick = () => { const t = $("#qConv").value.trim(); openTools("conv", t); if (t) convert(t, $("#cOut")); };
   $("#qConv").onkeydown = (e) => { if (e.key === "Enter") $("#qConvGo").click(); };
 }

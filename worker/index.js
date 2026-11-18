@@ -89,10 +89,16 @@ ${context ? "Dialogue so far:\n" + context + "\n" : ""}${answer ? 'Reference ans
 Judge whether the learner's sentence is correct, natural spoken English that conveys the Korean meaning (other natural wordings are fine).
 JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of the learner's sentence (same if fine)","natural":"how a native would say it","why":"Korean explanation of the main problems or praise (1-3 sentences)","points":["short Korean grammar/expression points (max 3)"]}`,
 
-  word: ({ word }) => `Explain the English word or phrase "${word}" for a Korean learner.
-JSON: {"word":"${word}","ipaUS":"/.../","ipaUK":"/.../","pos":"part of speech","ko":"Korean meanings (short, comma separated)","nuance":"Korean note on nuance/usage, mention NZ/UK/US differences if any",
-"examples":[{"en":"natural spoken example","ko":"Korean"}] (3 short examples, everyday conversation, one with a NZ setting),
-"collocations":["common collocations (max 4)"],"drill":[{"ko":"Korean sentence that should be said in English using the word","en":"model answer"}] (2 items)}`,
+  word: ({ word }) => `Explain the English word or phrase "${word}" for a Korean adult learner living in Auckland.
+Rules:
+- "ko": 1-3 Korean meanings, MOST COMMON sense first, natural everyday Korean (no literal/translation-ese). If the word has clearly different senses, separate with " / " and add a tiny hint in parentheses, e.g. "가정하다(동사) / 가면 (명사)".
+- "register": one of "slang", "informal", "neutral", "formal". "region": "NZ", "UK", "US", "AU" or "all" (where it is mainly used; say "NZ/AU" if shared).
+- "nuance": 2-3 short Korean sentences: the real feeling/connotation, how Kiwis actually use it, when NOT to use it. For slang/idioms, give the literal vs actual meaning.
+- "similar": 2-3 similar words/phrases with a very short Korean difference each.
+- Examples: natural spoken lines a native would really say (not textbook), one set in New Zealand daily life. Include the exact word in each.
+Example of the quality expected for "chuffed":
+{"word":"chuffed","ipaUS":"/tʃʌft/","ipaUK":"/tʃʌft/","pos":"adjective","ko":"뿌듯한, 기쁘고 흡족한","register":"informal","region":"NZ/UK","nuance":"좋은 일이 생겨서 뿌듯하고 기분이 좋을 때 쓰는 구어체예요. 'happy'보다 자랑스러운 기쁨이 담겨 있어요. 격식 있는 글에서는 쓰지 않아요.","similar":[{"w":"stoked","d":"더 들뜨고 신남 (NZ·호주 슬랭)"},{"w":"pleased","d":"무난하고 점잖은 기쁨"}],"examples":[{"en":"I'm so chuffed with how the kitchen turned out.","ko":"부엌이 이렇게 나와서 너무 뿌듯해."}],"collocations":["chuffed to bits","chuffed with"],"drill":[{"ko":"시험에 붙어서 너무 뿌듯해.","en":"I'm so chuffed I passed my test."}]}
+JSON only, same fields: {"word":"${word}","ipaUS":"/.../","ipaUK":"/.../","pos":"...","ko":"...","register":"...","region":"...","nuance":"...","similar":[{"w":"...","d":"..."}],"examples":[{"en":"...","ko":"..."}] (3 items),"collocations":["..."] (max 4),"drill":[{"ko":"...","en":"..."}] (2 items)}`,
 
   writing: ({ topic }) => `Create a 10-line spoken dialogue (A/B alternating, A first, 5 lines each) about: "${topic}", set in everyday Auckland life.
 This is for English composition practice: the learner sees the Korean and must say it in English.
@@ -105,7 +111,7 @@ JSON: {"items":[{"en":"...","ko":"...","note":"Korean: which meaning/structure i
 
 async function callGemini(env, prompt, task) {
   let lastErr = "";
-  const fast = FAST_TASKS.has(task);
+  const fast = FAST_TASKS.has(task) && task !== "best";
   for (const model of fast ? FAST : SLOW) {
     for (let attempt = 0; attempt < 2; attempt++) {
       let r;
@@ -117,7 +123,7 @@ async function callGemini(env, prompt, task) {
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: SYS }] },
             contents: [{ role: "user", parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.7, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: fast ? 1500 : 4000 },
+            generationConfig: { temperature: 0.7, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: fast ? 1800 : 4000 },
           }),
         });
       } catch { lastErr = "시간 초과"; break; }   // 느린 모델은 기다리지 않고 바로 다음 모델로
@@ -137,6 +143,7 @@ async function callGemini(env, prompt, task) {
 
 // ── Cloudflare Workers AI (같은 계정·키 불필요·빠름) ───────────
 const CF_MODELS = ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.1-8b-instruct-fast"];
+const CF_BEST = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast"];
 function parseJsonLoose(text) {
   const t = String(text || "").replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
   try { return JSON.parse(t); } catch {}
@@ -150,15 +157,15 @@ const VALID = {
   correct: (r) => r && typeof r.score === "number",
   drill: (r) => r && Array.isArray(r.items) && r.items.length,
 };
-async function callCF(env, prompt, task) {
+async function callCF(env, prompt, task, models = CF_MODELS) {
   if (!env.AI) throw new Error("no-ai-binding");
   let lastErr;
-  for (const model of CF_MODELS) {
+  for (const model of models) {
     try {
       const out = await Promise.race([
         env.AI.run(model, {
           messages: [{ role: "system", content: SYS }, { role: "user", content: prompt + "\nReturn ONLY the JSON object." }],
-          max_tokens: 1200, temperature: 0.5,
+          max_tokens: 1600, temperature: 0.5,
         }),
         new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 10000)),
       ]);
@@ -172,9 +179,16 @@ async function callCF(env, prompt, task) {
 }
 
 // 빠른 작업은 Workers AI 와 Gemini 를 동시에 호출해 먼저 온 유효한 답을 쓴다
-async function callAI(env, prompt, task) {
+async function callAI(env, prompt, task, engine) {
   const t0 = Date.now();
   const tag = (via) => (r) => { if (r && typeof r === "object") { r._via = via; r._ms = Date.now() - t0; } return r; };
+  if (engine === "best") {   // 정밀 풀이: 큰 모델 우선 (Gemini Flash → Llama 70B), 느려도 되는 두 번째 요청용
+    const runs = [];
+    if (env.GEMINI_API_KEY) runs.push(callGemini(env, prompt, "best").then((r) => { if (VALID[task] && !VALID[task](r)) throw new Error("내용 부족"); return tag("gemini-best")(r); }));
+    if (env.AI) runs.push(callCF(env, prompt, task, CF_BEST).then(tag("llama70b")));
+    if (!runs.length) throw new Error("AI 설정 없음");
+    try { return await Promise.any(runs); } catch (e) { throw new Error((e.errors || []).map((x) => x.message).join(" / ") || "AI 실패"); }
+  }
   if (!FAST_TASKS.has(task)) return tag("gemini")(await callGemini(env, prompt, task));
   const runs = [];
   if (env.AI) runs.push(callCF(env, prompt, task).then(tag("workers-ai")));
@@ -203,11 +217,13 @@ async function handleAI(request, env) {
   // 입력 길이 제한
   for (const [k, v] of Object.entries(body)) if (typeof v === "string" && v.length > 1500) body[k] = v.slice(0, 1500);
 
-  // 단어 풀이는 모든 사용자가 공유하는 캐시(개인정보 없음) — 같은 단어는 즉시 응답, AI 한도도 쓰지 않음
-  const wkey = body.task === "word" ? "wc:" + String(body.word || "").toLowerCase().trim().slice(0, 60) : "";
-  if (wkey && env.STORE) {
-    const hit = await env.STORE.get(wkey);
-    if (hit) return json({ result: JSON.parse(hit), cached: true });
+  // 단어 풀이는 모든 사용자가 공유하는 캐시(개인정보 없음). 정밀 풀이(best)가 있으면 그걸 우선, 같은 단어는 즉시 응답하고 AI 한도도 쓰지 않음
+  const engine = body.engine === "best" ? "best" : "fast";
+  const wbase = body.task === "word" ? String(body.word || "").toLowerCase().trim().slice(0, 60) : "";
+  const wkey = wbase ? `wc2:${engine}:${wbase}` : "";
+  if (wbase && env.STORE) {
+    const hit = (await env.STORE.get(`wc2:best:${wbase}`)) || (engine === "fast" ? await env.STORE.get(`wc2:fast:${wbase}`) : null);
+    if (hit) { const r = JSON.parse(hit); return json({ result: r, cached: true, best: !!r._best }); }
   }
   const day = nzToday();
   if (env.STORE) {
@@ -216,7 +232,8 @@ async function handleAI(request, env) {
     if (!(await bump(env, `ai:${day}:${ck}`, AI_PER_CODE_PER_DAY))) return json({ error: `오늘 AI 사용 한도(${AI_PER_CODE_PER_DAY}회)를 다 썼습니다` }, 429);
   }
   try {
-    const result = await callAI(env, make(body), body.task);
+    const result = await callAI(env, make(body), body.task, engine);
+    if (engine === "best" && result) result._best = true;
     if (wkey && env.STORE && result && result.ko) await env.STORE.put(wkey, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 90 });
     return json({ result });
   } catch (e) {

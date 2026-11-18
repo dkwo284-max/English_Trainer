@@ -271,19 +271,21 @@ async function wordLookup(word, out) {
   const cached = wordCache.get(key);
   const dictP = cached ? Promise.resolve(cached.d) : simple ? api("/api/dict?w=" + encodeURIComponent(key)).then((r) => r.data || {}).catch(() => ({})) : Promise.resolve({});
   const aiP = cached?.x ? Promise.resolve(cached.x) : ai("word", { word }).catch((e) => ({ _err: e.message }));
+  const bestP = cached?.x?._best ? null : ai("word", { word, engine: "best" }).catch(() => null);   // 정밀 풀이(느림) — 오면 교체
   const draw = (d, x, pending) => {
     const ok = x && !x._err;
     if (!ok && !(d.defs || []).length && !pending) { out.innerHTML = `<div class="card empty">찾지 못했어요. ${x?._err ? esc(x._err) : ""}</div>`; return; }
     const au = d.audio || {};
     const audioBtn = (reg, label, lang) => au[reg] ? `<button class="btn sm" data-audio="${esc(au[reg])}">🔊 ${label} 원어민</button>` : `<button class="btn sm" data-say="${esc(word)}" data-lang="${lang}">🔊 ${label}</button>`;
     out.innerHTML = `<div class="card">
-    <div class="row spread"><h2>${esc(ok ? x.word || word : word)}</h2><span class="tag">${esc((ok && x.pos) || d.defs?.[0]?.pos || "")}</span></div>
+    <div class="row spread"><h2>${esc(ok ? x.word || word : word)}</h2><span class="row" style="gap:4px"><span class="tag">${esc((ok && x.pos) || d.defs?.[0]?.pos || "")}</span>${ok && x.register ? `<span class="tag">${esc(x.register)}</span>` : ""}${ok && x.region ? `<span class="tag" style="background:var(--b-bubble)">${esc(x.region)}</span>` : ""}</span></div>
     <div class="row wrap" style="margin:6px 0 10px;gap:12px">
       <span><span class="small muted">US</span> <span class="ipa">${esc((ok && x.ipaUS) || d.phon?.us || "")}</span></span>
       <span><span class="small muted">UK</span> <span class="ipa">${esc((ok && x.ipaUK) || d.phon?.uk || "")}</span></span></div>
     <div class="row wrap">${audioBtn("us", "미국", "en-US")}${audioBtn("uk", "영국", "en-GB")}${au.au ? audioBtn("au", "호주", "en-AU") : ""}</div>
     ${ok ? `<p style="font-size:17px;font-weight:700;margin:12px 0 4px">${esc(x.ko)}</p><p class="small muted" style="margin:0">${esc(x.nuance || "")}</p>` : ""}
     ${!ok ? ((d.defs || []).map((f) => `<p class="small"><b>${esc(f.pos)}</b> ${esc(f.def)}</p>`).join("") + (pending ? `<p class="small muted"><span class="spinner"></span> 한국어 뜻·예문 만드는 중…</p>` : `<p class="small muted">AI 설명을 불러오지 못해 영영 풀이만 보여 드려요. (${esc(x?._err || "")})</p>`)) : ""}
+    ${ok && x.similar?.length ? `<div class="label" style="margin-top:12px">비슷한 표현</div>${x.similar.map((m) => `<div class="small"><b class="w" data-w="${esc(m.w)}" style="cursor:pointer">${esc(m.w)}</b> — ${esc(m.d)}</div>`).join("")}` : ""}
     ${ok && x.collocations?.length ? `<div class="label" style="margin-top:12px">자주 같이 쓰는 말</div><div class="row wrap">${x.collocations.map((c) => `<span class="tag">${esc(c)}</span>`).join("")}</div>` : ""}
   </div>
   ${ok && x.examples?.length ? `<div class="card"><div class="label">예문</div>${x.examples.map((e) => `<div class="item"><div class="en">${tappable(e.en)}</div><div class="ko">${esc(e.ko)}</div><div class="acts">${sayBtns(e.en)}${starBtn({ en: e.en, ko: e.ko, key: word, src: "단어 " + word })}</div></div>`).join("")}</div>` : ""}
@@ -298,12 +300,18 @@ async function wordLookup(word, out) {
   };
   // 사전(빠름)을 먼저 보여 주고, AI 설명이 오면 채운다
   const d = await dictP;
-  let finished = false;
   if ((d.defs || []).length || (d.audio && (d.audio.us || d.audio.uk))) draw(d, null, true);
-  const x = await aiP;
-  finished = true;
+  let x = await aiP;
   if (x && !x._err) wordCache.set(key, { d, x });
   draw(d, x, false);
+  if (bestP) {   // 정밀 풀이가 도착하면 더 정확한 내용으로 교체
+    const bx = await bestP;
+    if (bx && !bx._err && bx.ko && $("#wSave") && !$("#wDrill input, #wDrill textarea")?.value) {
+      wordCache.set(key, { d, x: bx }); draw(d, bx, false);
+      const t = document.createElement("div"); t.className = "small muted"; t.style.margin = "6px 2px"; t.textContent = "✓ 더 정확한 풀이로 업데이트했어요";
+      out.prepend(t); setTimeout(() => t.remove(), 4000);
+    }
+  }
 }
 const wordCache = new Map();
 

@@ -23,13 +23,14 @@ function toast(msg, ms = 2200) {
 // ── 상태 & 동기화 ───────────────────────────────────────
 let CODE = "";
 let S = null;
-const blank = () => ({ v: 1, rev: 0, created: today(), saved: [], scenarios: [], wrong: [], words: [], history: {}, done: {}, settings: { accent: "en-US", rate: 0.95, showKo: true } });
+const blank = () => ({ v: 1, rev: 0, created: today(), saved: [], scenarios: [], wrong: [], words: [], history: {}, done: {}, expr: {}, speak: {}, errors: [], settings: { accent: "en-US", rate: 0.95, showKo: true } });
 
 function fix(s) {
   const b = blank();
   s = Object.assign(b, s || {});
   s.settings = Object.assign(blank().settings, s.settings || {});
-  for (const k of ["saved", "scenarios", "wrong", "words"]) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ["saved", "scenarios", "wrong", "words", "errors"]) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ["expr", "speak"]) if (!s[k] || typeof s[k] !== "object" || Array.isArray(s[k])) s[k] = {};
   return s;
 }
 
@@ -60,6 +61,11 @@ function mergeStates(a, b) {
   }
   for (const [k, v] of Object.entries(a.done || {})) out.done[k] = out.done[k] || v;
   out.settings = Object.assign({}, b.settings, a.settings);
+  for (const [k, v] of Object.entries(a.expr || {})) out.expr[k] = Object.assign({}, v, out.expr[k] || {});
+  for (const [k, v] of Object.entries(a.speak || {})) { const c = out.speak[k]; if (!c || (v.at || "") > (c.at || "")) out.speak[k] = v; }
+  const eid = new Set(out.errors.map((e) => e.id));
+  for (const e of a.errors || []) if (!eid.has(e.id)) out.errors.push(e);
+  out.errors = out.errors.sort((x, y) => (y.at || "").localeCompare(x.at || "")).slice(0, 300);
   return out;
 }
 
@@ -131,7 +137,9 @@ async function login(code) {
     } else setDot("err", r.data.error || "서버 연결 실패 — 이 기기에만 저장");
   } catch { setDot("err", "오프라인 — 이 기기에만 저장"); online = false; }
   const cleaned = cleanHan(S);   // 예전에 저장된 시나리오·문장에 섞인 한자 제거
-  if (cleaned) save();
+  let back = false;              // 이전에 저장한 문장의 핵심 표현을 표현 마스터에 등록
+  for (const sv of S.saved) if (sv.key) { const id = exprId(sv.key); if (id && !S.expr[id]) { S.expr[id] = { k: sv.key, ko: sv.keyKo || "", seen: (sv.at || today()).slice(0, 10) }; back = true; } }
+  if (cleaned || back) save();
   lsSet("et:s:" + CODE, JSON.stringify(S));
   $("#login").hidden = true; $("#app").hidden = false;
   $("#codeLabel").textContent = CODE;
@@ -160,14 +168,15 @@ function addWrong(it, mine, res) {
   let w = S.wrong.find((x) => norm(x.en) === key);
   const now = new Date().toISOString();
   if (!w) { w = { id: uid(), ko: it.ko, en: it.en, src: it.src || "", reps: 0, at: now }; S.wrong.unshift(w); }
-  Object.assign(w, { mine, why: res?.why || "", natural: res?.natural || "", box: 0, due: addDays(today(), 1), upd: now });
+  Object.assign(w, { mine, why: res?.why || "", natural: res?.natural || "", types: Array.isArray(res?.types) ? res.types : (w.types || []), box: 0, due: addDays(today(), 1), upd: now });
   save();
 }
 function reviewResult(w, ok) {
   w.reps = (w.reps || 0) + 1;
   w.box = ok ? Math.min((w.box || 0) + 1, SRS.length) : 0;
   w.upd = new Date().toISOString();
-  if (ok && w.box >= SRS.length) { w.mastered = true; w.due = "9999-12-31"; }
+  if (ok) { const n = norm(w.en); for (const [id, e] of Object.entries(S.expr)) if (id && n.includes(id) && !e.passed) e.passed = today(); }
+  if (ok && w.box >= SRS.length) { w.mastered = true; w.due = "9999-12-31"; log("mastered"); }
   else w.due = addDays(today(), ok ? SRS[w.box - 1] || 1 : 1);
   save();
 }
@@ -175,9 +184,52 @@ function saveSentence(x) {
   const key = norm(x.en);
   if (S.saved.some((s) => norm(s.en) === key)) { toast("이미 저장된 문장이에요"); return false; }
   S.saved.unshift({ id: uid(), en: x.en, ko: x.ko || "", key: x.key || "", keyKo: x.keyKo || "", src: x.src || "", at: new Date().toISOString() });
+  if (x.key) exprMark(x.key, x.keyKo, "seen");
   save(); toast("저장했어요 ☆"); return true;
 }
 const isSaved = (en) => S.saved.some((s) => norm(s.en) === norm(en));
+
+// ── YouGlish · 표현 마스터 · 말하기 기록 · 약점 ───────────────
+// YouGlish 검색어: 주어·조동사를 떼고 핵심만 (최대 4단어) — 예) "I'm ringing about" → "ringing about"
+function ygPhrase(k) {
+  let t = String(k || "").toLowerCase().replace(/[’]/g, "'").replace(/[^a-z0-9' -]+/g, " ").replace(/\s+/g, " ").trim();
+  for (let i = 0; i < 2; i++) {
+    const m = t.replace(/^(i|you|we|they|he|she|it|that|there|let's)(?:'(?:m|re|ve|d|ll|s))?\s+/, "").replace(/^(am|are|is|was|were|do|does|did|will|would|could|can|should)\s+/, "");
+    if (m && m.split(" ").length >= 2) t = m; else break;
+  }
+  const w = t.split(" ").filter(Boolean);
+  return (w.length > 4 ? w.slice(0, 4) : w).join(" ");
+}
+function ygUrl(k) {
+  const p = ygPhrase(k); if (!p) return "";
+  const acc = { "en-US": "us", "en-GB": "uk", "en-AU": "aus" }[S.settings.accent];   // 뉴질랜드는 억양 지정 없이 전체 검색
+  return "https://youglish.com/pronounce/" + encodeURIComponent(p) + "/english" + (acc ? "/" + acc : "");
+}
+const ygBtn = (k) => (ygUrl(k) ? `<a class="act yg" href="${ygUrl(k)}" target="_blank" rel="noopener">▶ 실제 예문</a>` : "");
+const exprId = (k) => norm(ygPhrase(k) || k);
+const STAGES = [["seen", "저장"], ["spoken", "따라 말함"], ["used", "영작 사용"], ["passed", "복습 통과"]];
+function exprMark(key, ko, stage) {
+  const id = exprId(key); if (!id) return;
+  const e = S.expr[id] || (S.expr[id] = { k: key, ko: ko || "" });
+  if (ko && !e.ko) e.ko = ko;
+  if (!e[stage]) { e[stage] = today(); save(); }
+}
+function markUsed(mine) {
+  const n = norm(mine); let ch = false;
+  for (const [id, e] of Object.entries(S.expr)) if (id && n.includes(id) && !e.used) { e.used = today(); ch = true; }
+  if (ch) save();
+}
+const exprDone = (e) => STAGES.filter(([k]) => e[k]).length;
+function recordSpeak(sc, i, score) {
+  const key = sc.id + ":" + i, c = S.speak[key];
+  const rec = { sc: sc.id, t: sc.title, i, en: sc.lines[i].en, first: c ? c.first : score, last: score, best: Math.max(c ? c.best : 0, score), n: (c ? c.n : 0) + 1, at: new Date().toISOString() };
+  S.speak[key] = rec; save(); return rec;
+}
+const ERR_TYPES = ["관사", "시제", "전치사", "어순", "어휘 선택", "수 일치", "구어체 표현", "기타"];
+function recordErrors(types) {
+  for (const t of types.slice(0, 3)) S.errors.unshift({ id: uid(), at: new Date().toISOString(), d: today(), t: ERR_TYPES.includes(t) ? t : "기타" });
+  S.errors = S.errors.slice(0, 300);
+}
 
 // ── 음성: 듣기(TTS)·따라 말하기(STT) ────────────────────
 let voices = [];
@@ -303,7 +355,7 @@ async function wordLookup(word, out) {
     <div class="row wrap" style="margin:6px 0 10px;gap:12px">
       <span><span class="small muted">US</span> <span class="ipa">${esc((ok && x.ipaUS) || d.phon?.us || "")}</span></span>
       <span><span class="small muted">UK</span> <span class="ipa">${esc((ok && x.ipaUK) || d.phon?.uk || "")}</span></span></div>
-    <div class="row wrap">${audioBtn("us", "미국", "en-US")}${audioBtn("uk", "영국", "en-GB")}${au.au ? audioBtn("au", "호주", "en-AU") : ""}</div>
+    <div class="row wrap">${audioBtn("us", "미국", "en-US")}${audioBtn("uk", "영국", "en-GB")}${au.au ? audioBtn("au", "호주", "en-AU") : ""}${ygBtn(word)}</div>
     ${ok ? `<p style="font-size:17px;font-weight:700;margin:12px 0 4px">${esc(x.ko)}</p><p class="small muted" style="margin:0">${esc(x.nuance || "")}</p>` : ""}
     ${!ok ? ((d.defs || []).map((f) => `<p class="small"><b>${esc(f.pos)}</b> ${esc(f.def)}</p>`).join("") + (pending ? `<p class="small muted"><span class="spinner"></span> 한국어 뜻·예문 만드는 중…</p>` : `<p class="small muted">AI 설명을 불러오지 못해 영영 풀이만 보여 드려요. (${esc(x?._err || "")})</p>`)) : ""}
     ${ok && x.similar?.length ? `<div class="label" style="margin-top:12px">비슷한 표현</div>${x.similar.map((m) => `<div class="small"><b class="w" data-w="${esc(m.w)}" style="cursor:pointer">${esc(m.w)}</b> — ${esc(m.d)}</div>`).join("")}` : ""}
@@ -343,7 +395,7 @@ async function convert(text, out) {
     const x = await ai("naturalize", { text });
     const row = (label, en) => en ? `<div class="item"><div class="label">${label}</div><div class="en">${tappable(en, label === "가장 자연스럽게" ? x.key : "")}</div><div class="acts">${sayBtns(en)}${starBtn({ en, ko: x.ko || text, key: x.key, keyKo: x.keyKo, src: "변환" })}</div></div>` : "";
     out.innerHTML = `<div class="card">${row("가장 자연스럽게", x.best)}${row("더 캐주얼 (Kiwi)", x.casual)}${row("더 정중하게", x.polite)}
-      ${x.key ? `<div class="keybox"><b>${esc(x.key)}</b> — ${esc(x.keyKo || "")}</div>` : ""}
+      ${x.key ? `<div class="keybox"><b>${esc(x.key)}</b> — ${esc(x.keyKo || "")} ${ygBtn(x.key)}</div>` : ""}
       ${(x.notes || []).length ? `<ul class="small">${x.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}</div>`;
     log("convert");
   } catch (e) { out.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; }
@@ -409,6 +461,8 @@ function quiz(box, items, opts = {}) {
       const record = () => {
         if (opts.kind === "review") reviewResult(it._ref, final);
         else if (!final) addWrong({ ...it, src: opts.src || it.src }, mine, r);
+        if (mine && final) markUsed(mine);
+        if (r && Array.isArray(r.types) && r.types.length && (!final || (r.score ?? 100) < 90)) recordErrors(r.types);
         results.push(final);
         if (opts.kind) log(opts.kind === "review_saved" ? "review" : opts.kind);
         opts.onEach?.(it, final, i);
@@ -466,9 +520,68 @@ function todayWriting() {
   return [...WRITING_SETS, ...custom].find((s) => s.id === pick) || WRITING_SETS[dayNum(today()) % WRITING_SETS.length];
 }
 
+
+// ── 홈 대시보드 조각 ─────────────────────────────────────
+const weekMonday = () => { const d = new Date(today() + "T12:00:00Z"); return addDays(today(), -((d.getUTCDay() + 6) % 7)); };
+function weeklyGoals() {
+  const mon = weekMonday(), end = addDays(mon, 6), cnt = { speak: 0, write: 0 };
+  for (const k of Object.keys(S.done)) { const m = k.match(/^(speak|write):(\d{4}-\d\d-\d\d):/); if (m && m[2] >= mon && m[2] <= end) cnt[m[1]]++; }
+  return cnt;
+}
+function heatmapHtml() {
+  const mon = addDays(weekMonday(), -77), cells = [];
+  const tot = (d) => Object.values(S.history[d] || {}).reduce((a, b) => a + b, 0);
+  for (let i = 0; i < 84; i++) {
+    const d = addDays(mon, i), n = tot(d), lv = d > today() ? "f" : n === 0 ? 0 : n < 5 ? 1 : n < 15 ? 2 : n < 30 ? 3 : 4;
+    cells.push(`<i class="hm l${lv}" title="${d} · ${n}문장"></i>`);
+  }
+  // 열 = 주(월~일), 첫 열이 가장 오래된 주
+  const cols = []; for (let w = 0; w < 12; w++) cols.push(cells.slice(w * 7, w * 7 + 7).join(""));
+  return `<div class="heat">${cols.map((c) => `<div class="hw">${c}</div>`).join("")}</div>
+    <div class="row small muted" style="justify-content:flex-end;gap:4px;margin-top:6px">적음 <i class="hm l0"></i><i class="hm l1"></i><i class="hm l2"></i><i class="hm l3"></i><i class="hm l4"></i> 많음</div>`;
+}
+function reviewStatsHtml() {
+  const act = S.wrong.filter((w) => !w.del), mastered = act.filter((w) => w.mastered).length;
+  if (!act.length) return `<p class="small muted" style="margin:6px 0 0">아직 복습할 문장이 없어요. 영작·퀴즈에서 틀린 문장이 여기에 쌓이고 간격 복습으로 익혀요.</p>`;
+  const labels = ["새 오답", "1일", "3일", "7일", "14일", "30일"];
+  const bars = labels.map((_, b) => act.filter((w) => !w.mastered && (w.box || 0) === b).length);
+  const mx = Math.max(1, ...bars, mastered);
+  const bar = (n, lab, cls) => `<div class="${cls || ""}"><b class="small">${n}</b><i style="height:${(n / mx) * 56 + 3}px"></i><span>${lab}</span></div>`;
+  // 최근 30일 '완전히 익힘' 누적 추이
+  const days = [...Array(30)].map((_, k) => addDays(today(), k - 29));
+  const after = (d) => Object.entries(S.history).filter(([x]) => x > d).reduce((a, [, h]) => a + (h.mastered || 0), 0);
+  const pts = days.map((d, k) => [k * (280 / 29), 56 - (Math.max(0, mastered - after(d)) / Math.max(1, mastered)) * 50]);
+  const line = mastered ? `<svg viewBox="0 0 280 60" class="spark" role="img" aria-label="익힌 문장 누적"><polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="${pts.map((q) => q[0].toFixed(1) + "," + q[1].toFixed(1)).join(" ")}"/></svg>` : "";
+  return `<div class="bars7">${bars.map((n, b) => bar(n, labels[b])).join("")}${bar(mastered, "익힘 ✓", "ok")}</div>
+    <p class="small muted" style="margin:6px 0 0">간격 복습 단계별 문장 수 (아래 숫자 = 다음 복습까지 간격). 익힌 문장 <b>${mastered}</b>개${mastered ? " · 최근 30일 누적" : ""}</p>${line}`;
+}
+function weaknessHtml() {
+  const from = addDays(today(), -30), cnt = {};
+  for (const e of S.errors) if ((e.d || "") >= from) cnt[e.t] = (cnt[e.t] || 0) + 1;
+  const top = Object.entries(cnt).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  if (!top.length) return `<p class="small muted" style="margin:6px 0 0">영작·복습에서 AI 교정을 받으면 자주 틀리는 유형(관사·시제·전치사 등)을 모아서 보여 드려요.</p>`;
+  const mx = top[0][1];
+  return top.map(([t, n], i) => `<div class="wk"><span class="wk-r">${i + 1}</span><div style="flex:1"><div class="row spread"><b>${esc(t)}</b><span class="small muted">${n}회</span></div><div class="wk-bar"><i style="width:${(n / mx) * 100}%"></i></div></div><button class="btn sm" data-weak="${esc(t)}">연습 5문장</button></div>`).join("")
+    + `<p class="small muted" style="margin:6px 0 0">최근 30일 교정에서 가장 자주 나온 유형 TOP ${top.length}. 연습은 그 유형으로 틀렸던 문장 중에서 골라요.</p>`;
+}
+function speakStatsHtml() {
+  const recs = Object.values(S.speak);
+  if (!recs.length) return `<p class="small muted" style="margin:6px 0 0">스피킹에서 🎙 따라 말하기를 하면 문장별 일치율이 기록돼요.</p>`;
+  const avg = Math.round(recs.reduce((a, r) => a + r.last, 0) / recs.length), gain = Math.round(recs.reduce((a, r) => a + (r.last - r.first), 0) / recs.length), low = recs.filter((r) => r.last < 70).length;
+  return `<div class="stats" style="grid-template-columns:repeat(3,1fr);margin-top:6px"><div class="stat"><b>${avg}%</b><span>평균 일치율</span></div><div class="stat"><b>${gain >= 0 ? "+" : ""}${gain}p</b><span>첫 시도 대비</span></div><div class="stat"><b>${low}</b><span>다시 연습</span></div></div>`;
+}
+
+function weakPractice(type) {
+  const items = S.wrong.filter((w) => !w.del && !w.mastered && (w.types || []).includes(type)).slice(0, 5);
+  if (!items.length) return toast("이 유형으로 저장된 틀린 문장이 아직 없어요. 영작을 더 해 보세요");
+  openSheet(`<h2>약점 연습 · ${esc(type)}</h2><p class="small muted">이 유형으로 틀렸던 문장 ${items.length}개를 다시 써 봐요.</p><div id="wkQ"></div>`);
+  quiz($("#wkQ"), items.map((w) => ({ ko: w.ko, en: w.en, _ref: w })), { kind: "review", onDone: () => { render(); } });
+}
+
 // 홈
 function renderHome(v) {
   const h = todayH(), due = dueItems().length, sc = todayScenario(), ws = todayWriting();
+  const wg = weeklyGoals();
   const speakN = Math.min(h.speak || 0, 12), writeN = Math.min(h.write || 0, 10), drillN = h.drill || 0;
   const days = [...Array(7)].map((_, k) => addDays(today(), k - 6));
   const tot = (d) => Object.values(S.history[d] || {}).reduce((a, b) => a + b, 0);
@@ -491,15 +604,25 @@ function renderHome(v) {
       <div class="task" data-go="vault"><div class="ring" style="--p:${due ? 0 : 100}">${due}</div><div class="t"><b>복습</b><span>${due ? `오늘 다시 볼 문장 ${due}개` : "오늘 복습 끝! 👍"}</span></div>›</div>
     </div>
     <div class="card">
-      <h3>최근 7일</h3>
-      <div class="bars">${days.map((d) => `<div class="${d === today() ? "today" : ""}"><i style="height:${(tot(d) / mx) * 70}px" title="${tot(d)}"></i><span>${"일월화수목금토"[new Date(d + "T12:00:00Z").getUTCDay()]}</span></div>`).join("")}</div>
+      <div class="row spread"><h3>이번 주 목표</h3><span class="small muted">월~일</span></div>
+      <div class="grid3" style="margin-top:10px">
+        <div class="goal"><div class="ring" style="--p:${Math.min(wg.speak / 3, 1) * 100}">${wg.speak}/3</div><span>스피킹 3세트</span></div>
+        <div class="goal"><div class="ring" style="--p:${Math.min(wg.write / 3, 1) * 100}">${wg.write}/3</div><span>영작 3세트</span></div>
+        <div class="goal"><div class="ring" style="--p:${due ? 0 : 100}">${due}</div><span>복습 0개 유지</span></div>
+      </div>
     </div>
+    <div class="card"><div class="row spread"><h3>복습 성과</h3><button class="btn sm" data-go="vault">복습하기</button></div>${reviewStatsHtml()}</div>
+    <div class="card"><h3>내 약점 TOP 3</h3>${weaknessHtml()}</div>
+    <div class="card"><div class="row spread"><h3>말하기 기록</h3><button class="btn sm" id="goSpeakRec">문장별 보기</button></div>${speakStatsHtml()}</div>
+    <div class="card"><h3>학습 달력 <small class="muted">최근 12주</small></h3>${heatmapHtml()}</div>
     <div class="card">
       <h3>이 말, 영어로 뭐라고 하지?</h3>
       <p class="small muted" style="margin:4px 0 8px">한국어를 쓰면 원어민 말투로 바꿔 드려요.</p>
       <div class="row"><input class="text" id="qConv" placeholder="예: 우리 애가 오늘 좀 피곤해 보여요"><button class="btn primary" id="qConvGo">변환</button></div>
     </div>`;
   v.querySelectorAll("[data-go]").forEach((t) => (t.onclick = () => go(t.dataset.go)));
+  v.querySelectorAll("[data-weak]").forEach((b) => (b.onclick = () => weakPractice(b.dataset.weak)));
+  const gsr = $("#goSpeakRec"); if (gsr) gsr.onclick = () => { vaultMode = "speakrec"; go("vault"); };
   v.querySelector("[data-go-saved]").onclick = () => { vaultMode = "saved"; vaultQ = ""; go("vault"); };
   $("#qConvGo").onclick = () => { const t = $("#qConv").value.trim(); openTools("conv", t); if (t) convert(t, $("#cOut")); };
   $("#qConv").onkeydown = (e) => { if (e.key === "Enter") $("#qConvGo").click(); };
@@ -549,7 +672,7 @@ function renderSpeak(v) {
     return `<div class="line ${ln.sp}" data-i="${i}"><div class="av">${ln.sp}</div><div class="bubble">
       ${hide ? `<div class="ko" style="font-size:16px;color:var(--text);margin:0 0 6px">${esc(ln.ko)}</div><div class="en hidden-en" data-reveal="${i}">${esc(ln.en)}</div>`
         : `<div class="en">${tappable(ln.en, ln.key)}</div>${S.settings.showKo ? `<div class="ko">${esc(ln.ko)}</div>` : ""}`}
-      ${!hide && ln.key ? `<div class="keybox"><b>${esc(ln.key)}</b> — ${esc(ln.keyKo || "")}</div>` : ""}
+      ${!hide && ln.key ? `<div class="keybox"><b>${esc(ln.key)}</b> — ${esc(ln.keyKo || "")} ${ygBtn(ln.key)}</div>` : ""}
       ${!hide && ln.tip ? `<div class="tip">${esc(ln.tip)}</div>` : ""}
       <div class="acts">${sayBtns(ln.en)}<button class="act" data-shadow="${i}">🎙 따라 말하기</button>${starBtn(o)}</div>
       <div class="shadow-res" id="sr${i}"></div></div></div>`;
@@ -566,7 +689,9 @@ function renderSpeak(v) {
         if (!alts.length) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return; }
         const best = alts.map((a) => [a, similarity(a, sc.lines[i].en)]).sort((a, b) => b[1] - a[1])[0];
         out.innerHTML = `<span class="tag ${best[1] >= 80 ? "good" : "bad"}">${best[1]}%</span> <span class="muted">들린 말: “${esc(best[0])}”</span>`;
-        if (best[1] >= 80) { log("shadow"); } else toast("천천히 한 단어씩 또박또박 다시 해 보세요");
+        const rec = recordSpeak(sc, i, best[1]);
+        out.innerHTML += ` <span class="small muted">· 최고 ${rec.best}% · ${rec.n}회</span>`;
+        if (best[1] >= 80) { log("shadow"); if (sc.lines[i].key) exprMark(sc.lines[i].key, sc.lines[i].keyKo, "spoken"); } else toast("천천히 한 단어씩 또박또박 다시 해 보세요");
       } catch (err) { out.textContent = err.message; }
     }
   };
@@ -707,8 +832,8 @@ function renderVault(v) {
   const q = norm(vaultQ);
   const f = (arr, keys) => !q ? arr : arr.filter((x) => keys.some((k) => norm(x[k]).includes(q) || String(x[k] || "").includes(vaultQ)));
   v.innerHTML = `
-    <div class="seg" id="vSeg"><button data-m="due">복습 ${due.length ? `(${due.length})` : ""}</button><button data-m="saved">저장 문장</button><button data-m="scn">시나리오</button><button data-m="words">단어</button></div>
-    ${vaultMode !== "due" ? `<input class="text" id="vSearch" placeholder="검색" value="${esc(vaultQ)}" style="margin:4px 0 8px">` : ""}
+    <div class="seg scroll" id="vSeg"><button data-m="due">복습 ${due.length ? `(${due.length})` : ""}</button><button data-m="saved">저장 문장</button><button data-m="expr">표현</button><button data-m="speakrec">발음</button><button data-m="scn">시나리오</button><button data-m="words">단어</button></div>
+    ${vaultMode !== "due" && vaultMode !== "speakrec" ? `<input class="text" id="vSearch" placeholder="검색" value="${esc(vaultQ)}" style="margin:4px 0 8px">` : ""}
     <div id="vBody"></div>`;
   [...$("#vSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.m === vaultMode));
   $("#vSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { vaultMode = b.dataset.m; renderVault(v); } };
@@ -724,10 +849,36 @@ function renderVault(v) {
     body.querySelectorAll("[data-delw]").forEach((b) => (b.onclick = () => { S.wrong = S.wrong.filter((w) => w.id !== b.dataset.delw); save(); renderVault(v); }));
   } else if (vaultMode === "saved") {
     const list = f(S.saved, ["en", "ko", "src"]);
-    body.innerHTML = list.length ? `<div class="row spread small muted" style="margin:0 2px"><span>${list.length}문장</span><button class="btn sm" id="svQuiz">저장 문장으로 퀴즈</button></div><div id="svQ"></div><div class="card">${list.map((s) => `<div class="item"><div class="en">${tappable(s.en, s.key)}</div><div class="ko">${esc(s.ko)}</div>${s.keyKo ? `<div class="keybox"><b>${esc(s.key)}</b> — ${esc(s.keyKo)}</div>` : ""}<div class="acts">${sayBtns(s.en)}<span class="small muted" style="margin-left:auto">${esc(s.src || "")}</span><button class="act" data-dels="${s.id}">삭제</button></div></div>`).join("")}</div>`
+    body.innerHTML = list.length ? `<div class="row spread small muted" style="margin:0 2px"><span>${list.length}문장</span><button class="btn sm" id="svQuiz">저장 문장으로 퀴즈</button></div><div id="svQ"></div><div class="card">${list.map((s) => `<div class="item"><div class="en">${tappable(s.en, s.key)}</div><div class="ko">${esc(s.ko)}</div>${s.keyKo ? `<div class="keybox"><b>${esc(s.key)}</b> — ${esc(s.keyKo)} ${ygBtn(s.key)}</div>` : ""}<div class="acts">${sayBtns(s.en)}<span class="small muted" style="margin-left:auto">${esc(s.src || "")}</span><button class="act" data-dels="${s.id}">삭제</button></div></div>`).join("")}</div>`
       : `<div class="card empty">☆ 저장 버튼을 누른 문장이 여기에 모여요.</div>`;
     body.querySelectorAll("[data-dels]").forEach((b) => (b.onclick = () => { S.saved = S.saved.filter((s) => s.id !== b.dataset.dels); save(); renderVault(v); }));
     if ($("#svQuiz")) $("#svQuiz").onclick = () => { const pick = list.filter((s) => s.ko).sort(() => Math.random() - 0.5).slice(0, 10); if (!pick.length) return toast("한국어 해석이 있는 문장이 없어요"); $("#svQuiz").remove(); quiz($("#svQ"), pick.map((s) => ({ ko: s.ko, en: s.en })), { kind: "review_saved", src: "저장 문장" }); };
+  } else if (vaultMode === "expr") {
+    const list = f(Object.values(S.expr).map((e) => ({ ...e })), ["k", "ko"]).sort((a, b) => exprDone(a) - exprDone(b) || (b.seen || "").localeCompare(a.seen || ""));
+    const done = list.filter((e) => exprDone(e) === 4).length;
+    body.innerHTML = list.length ? `<div class="small muted" style="margin:0 2px 6px">저장한 핵심 표현 ${list.length}개 · 완전히 익힘 ${done}개 · 덜 익힌 표현이 위에 있어요. 따라 말하고, 영작에서 직접 쓰고, 복습을 통과하면 단계가 올라가요.</div><div class="card">${list.map((e) => `<div class="item"><div class="row spread"><b>${esc(e.k)}</b>${ygBtn(e.k)}</div><div class="ko">${esc(e.ko || "")}</div><div class="steps">${STAGES.map(([k, l]) => `<span class="step ${e[k] ? "on" : ""}">${l}</span>`).join("")}</div><div class="acts">${sayBtns(e.k)}</div></div>`).join("")}</div>`
+      : `<div class="card empty">☆ 저장한 문장의 핵심 표현이 여기에 모여요.<br><span class="small">단계가 올라가는 걸 확인하며 '쓸 수 있는 표현'으로 만들어 보세요.</span></div>`;
+  } else if (vaultMode === "speakrec") {
+    const recs = Object.entries(S.speak).map(([k, r]) => ({ k, ...r }));
+    if (!recs.length) { body.innerHTML = `<div class="card empty">스피킹에서 🎙 따라 말하기를 하면 문장별 일치율이 여기에 기록돼요.</div>`; }
+    else {
+      const bySc = {}; for (const r of recs) (bySc[r.sc] = bySc[r.sc] || { t: r.t, a: [] }).a.push(r);
+      const low = recs.filter((r) => r.last < 70).sort((a, b) => a.last - b.last);
+      body.innerHTML = `<div class="card"><h3>시나리오별 평균</h3>${Object.values(bySc).map((g) => { const avg = Math.round(g.a.reduce((x, r) => x + r.last, 0) / g.a.length), gain = Math.round(g.a.reduce((x, r) => x + r.last - r.first, 0) / g.a.length); return `<div class="wk" style="margin-top:8px"><div style="flex:1"><div class="row spread"><b class="small">${esc(g.t)}</b><span class="small muted">${avg}% · 첫 시도 대비 ${gain >= 0 ? "+" : ""}${gain}p · ${g.a.length}문장</span></div><div class="wk-bar"><i style="width:${avg}%"></i></div></div></div>`; }).join("")}</div>
+        <div class="card"><h3>발음 다시 연습 <small class="muted">70% 미만 ${low.length}문장</small></h3>${low.length ? low.map((r) => `<div class="item"><div class="en">${tappable(r.en)}</div><div class="small muted" id="pr-${esc(r.k)}">최근 ${r.last}% · 최고 ${r.best}% · ${r.n}회</div><div class="acts">${sayBtns(r.en)}<button class="act" data-pr="${esc(r.k)}">🎙 다시 말하기</button></div></div>`).join("") : `<div class="empty">🎉 70% 미만인 문장이 없어요.</div>`}</div>`;
+      body.onclick = async (e) => {
+        const b = e.target.closest("[data-pr]"); if (!b) return;
+        const r = S.speak[b.dataset.pr], out = document.getElementById("pr-" + b.dataset.pr); if (!r) return;
+        out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
+        try {
+          const alts = await listen(); if (!alts.length) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return; }
+          const sc = allScenarios().find((x) => x.id === r.sc), i = r.i;
+          const best = Math.max(...alts.map((a) => similarity(a, r.en)));
+          if (sc && sc.lines[i]) { const rec = recordSpeak(sc, i, best); out.innerHTML = `<span class="tag ${best >= 80 ? "good" : "bad"}">${best}%</span> 최고 ${rec.best}% · ${rec.n}회`; if (best >= 80) log("shadow"); }
+          else out.innerHTML = `<span class="tag">${best}%</span>`;
+        } catch (err) { out.textContent = err.message; }
+      };
+    }
   } else if (vaultMode === "scn") {
     const list = f(scns, ["title", "setting", "prompt"]);
     body.innerHTML = list.length ? `<div class="card">${list.map((s) => `<div class="item"><div class="row spread"><b>${esc(s.title)}</b><span class="tag">${s.kind === "writing" ? "영작" : s.custom ? "내 시나리오" : "필수"}</span></div><div class="small muted">${esc(s.setting || "")} · ${s.lines.length}문장${s.at ? " · " + esc(s.at.slice(0, 10)) : ""}</div><div class="acts"><button class="act" data-open="${esc(s.id)}" data-k="${s.kind || ""}">열기</button><button class="act" data-copy="${esc(s.id)}">전체 문장 복사</button>${s.custom ? `<button class="act" data-delc="${esc(s.id)}">삭제</button>` : `<button class="act" data-unfav="${esc(s.id)}">보관 해제</button>`}</div></div>`).join("")}</div>`

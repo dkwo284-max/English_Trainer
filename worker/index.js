@@ -87,7 +87,7 @@ JSON: {"best":"most natural spoken version","casual":"more casual/Kiwi version",
   correct: ({ ko, answer, mine, context }) => `Korean prompt: "${ko}"
 ${context ? "Dialogue so far:\n" + context + "\n" : ""}${answer ? 'Reference answer: "' + answer + '"\n' : ""}Learner's English: "${mine}"
 Judge whether the learner's sentence is correct, natural spoken English that conveys the Korean meaning (other natural wordings are fine).
-JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of the learner's sentence (same if fine)","natural":"how a native would say it","why":"Korean explanation of the main problems or praise (1-3 sentences)","points":["short Korean grammar/expression points (max 3)"]}`,
+JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of the learner's sentence (same if fine)","natural":"how a native would say it","why":"Korean explanation of the main problems or praise (1-3 sentences)","points":["short Korean grammar/expression points (max 3)"],"types":[up to 3 of exactly these labels for the learner's mistakes, empty array if none: "관사","시제","전치사","어순","어휘 선택","수 일치","구어체 표현","기타"]}`,
 
   word: ({ word }) => `Explain the English word or phrase "${word}" for a Korean adult learner living in Auckland.
 Rules:

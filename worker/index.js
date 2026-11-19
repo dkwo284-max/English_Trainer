@@ -156,8 +156,10 @@ const VALID = {
   naturalize: (r) => r && typeof r.best === "string" && r.best,
   correct: (r) => r && typeof r.score === "number",
   drill: (r) => r && Array.isArray(r.items) && r.items.length,
+  dialogue: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en).length >= 6,
+  writing: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en && l.ko).length >= 5,
 };
-async function callCF(env, prompt, task, models = CF_MODELS) {
+async function callCF(env, prompt, task, models = CF_MODELS, opt = {}) {
   if (!env.AI) throw new Error("no-ai-binding");
   let lastErr;
   for (const model of models) {
@@ -165,9 +167,9 @@ async function callCF(env, prompt, task, models = CF_MODELS) {
       const out = await Promise.race([
         env.AI.run(model, {
           messages: [{ role: "system", content: SYS }, { role: "user", content: prompt + "\nReturn ONLY the JSON object." }],
-          max_tokens: 1600, temperature: 0.5,
+          max_tokens: opt.maxTokens || 1600, temperature: 0.5,
         }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 10000)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), opt.timeout || 10000)),
       ]);
       const text = typeof out === "string" ? out : out?.response ?? out?.choices?.[0]?.message?.content ?? "";
       const res = typeof text === "object" ? text : parseJsonLoose(text);
@@ -189,7 +191,22 @@ async function callAI(env, prompt, task, engine) {
     if (!runs.length) throw new Error("AI 설정 없음");
     try { return await Promise.any(runs); } catch (e) { throw new Error((e.errors || []).map((x) => x.message).join(" / ") || "AI 실패"); }
   }
-  if (!FAST_TASKS.has(task)) return tag("gemini")(await callGemini(env, prompt, task));
+  if (!FAST_TASKS.has(task)) {
+    // 긴 생성(대화·영작 세트): Gemini 가 주 경로. Gemini 가 실패하거나 12초 안에 답이 없으면 Cloudflare(Llama 70B)로 백업을 시작해 먼저 온 유효한 답을 쓴다.
+    const long = { maxTokens: 4000, timeout: 40000 };
+    const gem = env.GEMINI_API_KEY
+      ? callGemini(env, prompt, task).then((r) => { if (VALID[task] && !VALID[task](r)) throw new Error("내용 부족"); return tag("gemini")(r); })
+      : Promise.reject(new Error("Gemini 키 없음"));
+    if (!env.AI) return await gem;
+    const backup = () => callCF(env, prompt, task, CF_BEST, long).then(tag("cloudflare-backup"));
+    const hedged = new Promise((resolve, reject) => {
+      let started = false, gemErr;
+      const start = () => { if (started) return; started = true; backup().then(resolve, (e) => reject(new AggregateError([gemErr, e].filter(Boolean)))); };
+      const timer = setTimeout(start, 12000);
+      gem.then((r) => { clearTimeout(timer); resolve(r); }, (e) => { gemErr = e; clearTimeout(timer); start(); });
+    });
+    try { return await hedged; } catch (e) { throw new Error((e.errors || [e]).map((x) => x.message).join(" / ") || "AI 실패"); }
+  }
   const runs = [];
   if (env.AI) runs.push(callCF(env, prompt, task).then(tag("workers-ai")));
   if (env.GEMINI_API_KEY) runs.push(callGemini(env, prompt, task).then((r) => { if (VALID[task] && !VALID[task](r)) throw new Error("내용 부족"); return tag("gemini")(r); }));

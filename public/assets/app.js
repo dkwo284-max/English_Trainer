@@ -207,7 +207,7 @@ function ygUrl(k) {
 }
 const ygBtn = (k) => (ygUrl(k) ? `<a class="act yg" href="${ygUrl(k)}" target="_blank" rel="noopener">▶ 실제 예문</a>` : "");
 const exprId = (k) => norm(ygPhrase(k) || k);
-const STAGES = [["seen", "저장"], ["spoken", "따라 말함"], ["used", "영작 사용"], ["passed", "복습 통과"]];
+const STAGES = [["seen", "저장"], ["dict", "받아쓰기"], ["spoken", "따라 말함"], ["used", "영작 사용"], ["passed", "복습 통과"]];
 function exprMark(key, ko, stage) {
   const id = exprId(key); if (!id) return;
   const e = S.expr[id] || (S.expr[id] = { k: key, ko: ko || "" });
@@ -408,6 +408,7 @@ function quiz(box, items, opts = {}) {
   const step = () => {
     if (i >= items.length) {
       const ok = results.filter(Boolean).length;
+      if (opts.noSummary) { opts.onDone?.(ok, items.length); return; }
       box.innerHTML = `<div class="result ${ok === items.length ? "ok" : ""}" style="text-align:center"><div class="score">${ok} / ${items.length}</div><p>${ok === items.length ? "완벽해요! 👏" : "틀린 문장은 복습함에 자동으로 들어갔어요."}</p></div>`;
       opts.onDone?.(ok, items.length);
       return;
@@ -456,7 +457,7 @@ function quiz(box, items, opts = {}) {
         ${(r.points || []).length ? `<ul>${r.points.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
         <div class="acts">${sayBtns(r.natural || it.en)}${starBtn({ en: r.natural || it.en, ko: it.ko, src: opts.src || "" })}</div>
       </div>
-      <div class="row" style="margin-top:10px">${!ok && r.offline ? `<button class="btn" id="qOk">맞은 걸로</button>` : ""}<button class="btn primary big" id="qNext">${i + 1 < items.length ? "다음 →" : "결과 보기"}</button></div>`;
+      <div class="row" style="margin-top:10px">${!ok && r.offline ? `<button class="btn" id="qOk">맞은 걸로</button>` : ""}<button class="btn primary big" id="qNext">${i + 1 < items.length ? "다음 →" : opts.noSummary ? "다음 단계 →" : "결과 보기"}</button></div>`;
       let final = ok;
       const record = () => {
         if (opts.kind === "review") reviewResult(it._ref, final);
@@ -650,6 +651,11 @@ function renderSpeak(v) {
       ${speakMode === "role" ? `<div class="row small" style="gap:6px"><span class="muted">내 역할</span><div class="seg" id="roleSeg" style="flex:1;margin:0"><button data-r="A">A ${esc(sc.roles?.A || "")}</button><button data-r="B">B ${esc(sc.roles?.B || "")}</button></div></div>` : ""}
       <p class="small muted" style="margin:6px 0 0">${speakMode === "read" ? "단어를 누르면 뜻·발음을 볼 수 있어요. 노란색은 꼭 익힐 핵심 표현." : speakMode === "hide" ? "한국어를 보고 먼저 영어로 말한 뒤, 문장을 눌러 확인하세요." : "상대 대사는 자동으로 읽어 주고, 내 차례에 🎙로 말해 보세요."}</p>
     </div>
+    <div class="card" id="rtnCard">
+      <div class="row spread"><h3>🎧 받아쓰기 연습</h3><span class="small muted">듣고 → 쓰고 → 말하고 → 영작</span></div>
+      <p class="small muted" style="margin:4px 0 8px">같은 문장을 <b>받아쓰기 → 따라 말하기 → 영작</b> 세 방식으로 꺼내 쓰면 훨씬 오래 남아요. 문장 수를 골라 시작하세요.</p>
+      <div class="grid2"><button class="btn primary" data-rtn="4">3단 루틴 · 4문장</button><button class="btn" data-rtn="12">3단 루틴 · 전체 12</button><button class="btn" data-dict="6">받아쓰기만 · 6문장</button><button class="btn" data-dict="12">받아쓰기만 · 전체</button></div>
+    </div>
     <div class="dlg" id="dlg"></div>
     <div class="sticky-actions">
       <button class="btn" id="playAll">▶ 전체 듣기</button>
@@ -712,10 +718,132 @@ function renderSpeak(v) {
     if (sc.custom) { toast("내 시나리오는 이미 보관돼 있어요"); return; }
     S.done["fav:" + sc.id] = !S.done["fav:" + sc.id]; save(); renderSpeak(v);
   };
+  const startRtn = (n, mode) => {
+    const today_ = today();
+    let idxs = sc.lines.map((_, i) => i).filter((i) => !S.done[`routine:${today_}:${sc.id}:${i}`]);   // 오늘 루틴을 마치지 않은 문장 먼저
+    if (idxs.length < n) idxs = sc.lines.map((_, i) => i);
+    idxs = (n >= 12 ? idxs : idxs.sort(() => Math.random() - 0.5).slice(0, n)).sort((a, b) => a - b);
+    const items = idxs.map((i) => ({ en: sc.lines[i].en, ko: sc.lines[i].ko, key: sc.lines[i].key, keyKo: sc.lines[i].keyKo, sc, idx: i, rkey: `routine:${today_}:${sc.id}:${i}`, src: (mode === "dict" ? "받아쓰기 " : "루틴 ") + sc.title }));
+    $("#dlg").hidden = true; document.querySelector(".sticky-actions").hidden = true;
+    const card = $("#rtnCard"); card.innerHTML = "";
+    runRoutine(card, items, { mode, onFinish: () => renderSpeak(v) });
+    window.scrollTo(0, 0);
+  };
+  v.querySelectorAll("[data-rtn]").forEach((b) => (b.onclick = () => startRtn(+b.dataset.rtn, "routine")));
+  v.querySelectorAll("[data-dict]").forEach((b) => (b.onclick = () => startRtn(+b.dataset.dict, "dict")));
   $("#doneScn").onclick = () => {
     if (S.done[doneKey]) { toast("오늘 이미 기록했어요. 한 번 더 들어도 좋아요!"); return; }
     S.done[doneKey] = 1; S.done["speak:done:" + sc.id] = today(); log("speak", 12); toast("스피킹 12문장 완료! 🔥"); renderSpeak(v);
   };
+}
+
+// ── 받아쓰기 · 3단 루틴 (듣고 쓰기 → 따라 말하기 → 영작) ─────────
+const FUNC_WORDS = new Set("a an the to of in on at for from with and or but so is are was were be been am do does did have has had will would can could should it its this that these those i you he she we they me him her us them my your his our their there here as if not no".split(" "));
+// 받아쓰기 채점: 정답 단어 하나하나가 맞았는지(순서 유지, LCS) 표시
+function dictDiff(exp, got) {
+  const ew = exp.split(/\s+/).filter(Boolean), gw = got.split(/\s+/).filter(Boolean).map(norm);
+  const en = ew.map(norm), m = en.length, n = gw.length;
+  const L = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--) for (let j = n - 1; j >= 0; j--) L[i][j] = en[i] === gw[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const ok = new Array(m).fill(false);
+  let i = 0, j = 0;
+  while (i < m && j < n) { if (en[i] === gw[j]) { ok[i] = true; i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++; }
+  const score = m ? Math.round((ok.filter(Boolean).length / m) * 100) : 0;
+  return { words: ew.map((w, k) => ({ w, ok: ok[k] })), score };
+}
+const hintText = (en) => en.split(/\s+/).map((w) => w[0] + "·".repeat(Math.max(0, w.replace(/[^A-Za-z0-9']/g, "").length - 1))).join(" ");
+
+// 한 문장 받아쓰기. onNext(result) 로 다음 단계에 넘김
+function dictOne(box, it, head, onNext) {
+  let tries = 0, hinted = false;
+  box.innerHTML = `${head}
+    <div class="dict-top"><button class="btn primary" id="dPlay">🔊 듣기</button><button class="btn" id="dSlow">🐢 느리게</button><button class="btn" id="dUk">🇬🇧 영국</button><button class="btn ghost" id="dHint">힌트</button></div>
+    <p class="small muted" style="margin:8px 0">들리는 대로 영어로 쓰세요. 마침표·대소문자는 채점에 영향이 없어요.</p>
+    <textarea id="dIn" rows="3" placeholder="들은 문장을 쓰세요" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+    <div id="dHintOut" class="small muted" style="margin-top:6px"></div>
+    <div class="row" style="margin-top:8px"><button class="btn ghost" id="dGive">모르겠어요</button><button class="btn primary" id="dGo" style="flex:1">확인</button></div><div id="dRes"></div>`;
+  const play = (slow, lang) => speak(it.en, lang, slow ? 0.7 : undefined);
+  $("#dPlay", box).onclick = () => play(false); $("#dSlow", box).onclick = () => play(true); $("#dUk", box).onclick = () => play(false, "en-GB");
+  $("#dHint", box).onclick = () => { hinted = true; $("#dHintOut", box).textContent = "힌트: " + hintText(it.en); };
+  const inp = $("#dIn", box); inp.focus({ preventScroll: true });
+  setTimeout(() => play(false), 300);
+  const judge = (giveUp) => {
+    const got = giveUp ? "" : inp.value.trim();
+    if (!giveUp && !got) return inp.focus();
+    tries++;
+    const d = dictDiff(it.en, got), pass = d.score >= 90 && !giveUp;
+    const missed = d.words.filter((x) => !x.ok).map((x) => x.w.replace(/[^A-Za-z0-9']/g, "").toLowerCase());
+    const fw = missed.filter((w) => FUNC_WORDS.has(w));
+    $("#dRes", box).innerHTML = `<div class="result ${pass ? "ok" : "no"}">
+      <div class="row spread"><span class="score">${pass ? "👍" : "🎧"} ${giveUp ? "" : d.score + "%"}</span><span class="tag ${pass ? "good" : "bad"}">${pass ? "통과" : "복습함에 저장"}</span></div>
+      <div class="dict-ans">${d.words.map((x) => `<span class="${x.ok ? "dw-ok" : "dw-no"}">${esc(x.w)}</span>`).join(" ")}</div>
+      ${got && !pass ? `<div class="small muted" style="margin-top:6px">내가 쓴 것: ${esc(got)}</div>` : ""}
+      ${fw.length ? `<p class="small" style="margin:8px 0 0">작은 단어 <b>${esc([...new Set(fw)].join(", "))}</b>는 약하게 들려서 놓치기 쉬워요. 문장 리듬을 타고 들어 보세요.</p>` : ""}
+      <div class="ko" style="margin-top:6px">${esc(it.ko || "")}</div>
+      <div class="acts">${sayBtns(it.en)}</div></div>
+      <div class="row" style="margin-top:10px">${!pass && !giveUp && tries < 3 ? `<button class="btn" id="dRetry">다시 써 보기</button>` : ""}<button class="btn primary big" id="dNext">다음 단계 →</button></div>`;
+    ["#dGo", "#dGive"].forEach((q) => ($(q, box).disabled = true));
+    if ($("#dRetry", box)) $("#dRetry", box).onclick = () => { $("#dRes", box).innerHTML = ""; ["#dGo", "#dGive"].forEach((q) => ($(q, box).disabled = false)); inp.focus(); };
+    $("#dNext", box).onclick = () => {
+      if (!pass) addWrong({ ko: it.ko || "", en: it.en, src: it.src || "받아쓰기" }, got, { why: giveUp ? "받아쓰기를 건너뜀" : `받아쓰기 ${d.score}% — 놓친 단어: ${missed.join(", ")}`, natural: it.en, types: [] });
+      else if (it.key) exprMark(it.key, it.keyKo, "dict");
+      log("dictation");
+      onNext({ pass, score: d.score, hinted });
+    };
+  };
+  $("#dGo", box).onclick = () => judge(false); $("#dGive", box).onclick = () => judge(true);
+  inp.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#dGo", box).click(); } };
+}
+
+// 한 문장 따라 말하기
+function shadowOne(box, it, head, sc, idx, onNext) {
+  box.innerHTML = `${head}
+    <div class="card tight"><div class="en">${tappable(it.en, it.key)}</div><div class="ko">${esc(it.ko || "")}</div></div>
+    <div class="row wrap" style="margin-top:8px"><button class="btn" id="sPlay">🔊 듣기</button><button class="btn" id="sSlow">🐢 느리게</button><button class="btn primary" id="sMic" style="flex:1">🎙 따라 말하기</button></div>
+    <div id="sRes" class="shadow-res" style="margin-top:8px"></div>
+    <div class="row" style="margin-top:10px"><button class="btn primary big" id="sNext">다음 단계 →</button></div>`;
+  let best = 0;
+  $("#sPlay", box).onclick = () => speak(it.en); $("#sSlow", box).onclick = () => speak(it.en, undefined, 0.7);
+  $("#sMic", box).onclick = async () => {
+    const out = $("#sRes", box); out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
+    try {
+      const alts = await listen(); if (!alts.length) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return; }
+      const score = Math.max(...alts.map((a) => similarity(a, it.en))); best = Math.max(best, score);
+      out.innerHTML = `<span class="tag ${score >= 80 ? "good" : "bad"}">${score}%</span> ${score >= 80 ? "좋아요! 👏" : "한 단어씩 또박또박 다시 해 보세요"}`;
+      if (sc && idx != null) recordSpeak(sc, idx, score);
+      if (score >= 80) { log("shadow"); if (it.key) exprMark(it.key, it.keyKo, "spoken"); }
+    } catch (e) { out.textContent = e.message; }
+  };
+  $("#sNext", box).onclick = () => onNext({ score: best });
+}
+
+// 받아쓰기 → 따라 말하기 → 영작 (문장마다 3단계). mode "dict" 이면 받아쓰기만
+function runRoutine(box, items, opts = {}) {
+  const res = [], total = items.length, dictOnly = opts.mode === "dict";
+  const dots = (st) => (dictOnly ? "" : `<div class="steps3">${["① 받아쓰기", "② 따라 말하기", "③ 영작"].map((l, k) => `<span class="${k === st ? "cur" : k < st ? "done" : ""}">${l}</span>`).join("")}</div>`);
+  const headOf = (n, st) => `<div class="row spread small muted"><span>${n + 1} / ${total}</span><span>${dictOnly ? "받아쓰기" : "3단 루틴"}</span></div><div class="quiz-prog"><i style="width:${(n / total) * 100}%"></i></div>${dots(st)}`;
+  const finish = () => {
+    const dp = res.filter((r) => r.dict && r.dict.pass).length, sp = res.filter((r) => r.shadow && r.shadow.score >= 80).length, wp = res.filter((r) => r.write).length;
+    log(dictOnly ? "dictation_set" : "routine");
+    box.innerHTML = `<div class="result ok" style="text-align:center"><div class="score">🎧 ${dp}/${total}</div><p>받아쓰기 통과 ${dp}/${total}${dictOnly ? "" : ` · 따라 말하기 80%↑ ${sp}/${total} · 영작 통과 ${wp}/${total}`}</p><p class="small muted">틀린 문장은 복습함에 들어갔어요. 간격 복습으로 다시 만나요.</p></div>
+      <button class="btn primary big" id="rtnDone" style="margin-top:10px">${opts.doneLabel || "마치기"}</button>`;
+    $("#rtnDone", box).onclick = () => opts.onFinish?.();
+  };
+  const item = (n) => {
+    if (n >= total) return finish();
+    const it = items[n], r = (res[n] = {});
+    dictOne(box, it, headOf(n, 0), (d) => {
+      r.dict = d;
+      if (dictOnly) return item(n + 1);
+      shadowOne(box, it, headOf(n, 1), it.sc, it.idx, (sh) => {
+        r.shadow = sh;
+        if (!it.ko) { return item(n + 1); }
+        box.innerHTML = headOf(n, 2) + '<div id="rqz"></div>';
+        quiz($("#rqz", box), [{ ko: it.ko, en: it.en, hint: it.key ? "핵심 표현: " + it.key : "" }], { kind: "routine_w", compact: true, src: it.src || "루틴", noSummary: true, onDone: (ok) => { r.write = ok > 0; if (it.rkey) { S.done[it.rkey] = 1; save(); } item(n + 1); } });
+      });
+    });
+  };
+  item(0);
 }
 
 function newScenarioSheet() {
@@ -849,14 +977,20 @@ function renderVault(v) {
     body.querySelectorAll("[data-delw]").forEach((b) => (b.onclick = () => { S.wrong = S.wrong.filter((w) => w.id !== b.dataset.delw); save(); renderVault(v); }));
   } else if (vaultMode === "saved") {
     const list = f(S.saved, ["en", "ko", "src"]);
-    body.innerHTML = list.length ? `<div class="row spread small muted" style="margin:0 2px"><span>${list.length}문장</span><button class="btn sm" id="svQuiz">저장 문장으로 퀴즈</button></div><div id="svQ"></div><div class="card">${list.map((s) => `<div class="item"><div class="en">${tappable(s.en, s.key)}</div><div class="ko">${esc(s.ko)}</div>${s.keyKo ? `<div class="keybox"><b>${esc(s.key)}</b> — ${esc(s.keyKo)} ${ygBtn(s.key)}</div>` : ""}<div class="acts">${sayBtns(s.en)}<span class="small muted" style="margin-left:auto">${esc(s.src || "")}</span><button class="act" data-dels="${s.id}">삭제</button></div></div>`).join("")}</div>`
+    body.innerHTML = list.length ? `<div class="row spread small muted" style="margin:0 2px"><span>${list.length}문장</span><span class="row" style="gap:6px"><button class="btn sm" id="svDict">🎧 받아쓰기</button><button class="btn sm" id="svQuiz">퀴즈</button></span></div><div id="svQ"></div><div class="card">${list.map((s) => `<div class="item"><div class="en">${tappable(s.en, s.key)}</div><div class="ko">${esc(s.ko)}</div>${s.keyKo ? `<div class="keybox"><b>${esc(s.key)}</b> — ${esc(s.keyKo)} ${ygBtn(s.key)}</div>` : ""}<div class="acts">${sayBtns(s.en)}<span class="small muted" style="margin-left:auto">${esc(s.src || "")}</span><button class="act" data-dels="${s.id}">삭제</button></div></div>`).join("")}</div>`
       : `<div class="card empty">☆ 저장 버튼을 누른 문장이 여기에 모여요.</div>`;
     body.querySelectorAll("[data-dels]").forEach((b) => (b.onclick = () => { S.saved = S.saved.filter((s) => s.id !== b.dataset.dels); save(); renderVault(v); }));
+    if ($("#svDict")) $("#svDict").onclick = () => {
+      const pick = list.sort(() => Math.random() - 0.5).slice(0, 5);
+      if (!pick.length) return toast("저장한 문장이 없어요");
+      openSheet(`<h2>저장 문장 받아쓰기</h2><div id="svDQ"></div>`);
+      runRoutine($("#svDQ"), pick.map((x) => ({ en: x.en, ko: x.ko, key: x.key, keyKo: x.keyKo, src: "받아쓰기 저장 문장" })), { mode: "dict", doneLabel: "닫기", onFinish: () => { closeSheet(); renderVault(v); } });
+    };
     if ($("#svQuiz")) $("#svQuiz").onclick = () => { const pick = list.filter((s) => s.ko).sort(() => Math.random() - 0.5).slice(0, 10); if (!pick.length) return toast("한국어 해석이 있는 문장이 없어요"); $("#svQuiz").remove(); quiz($("#svQ"), pick.map((s) => ({ ko: s.ko, en: s.en })), { kind: "review_saved", src: "저장 문장" }); };
   } else if (vaultMode === "expr") {
     const list = f(Object.values(S.expr).map((e) => ({ ...e })), ["k", "ko"]).sort((a, b) => exprDone(a) - exprDone(b) || (b.seen || "").localeCompare(a.seen || ""));
-    const done = list.filter((e) => exprDone(e) === 4).length;
-    body.innerHTML = list.length ? `<div class="small muted" style="margin:0 2px 6px">저장한 핵심 표현 ${list.length}개 · 완전히 익힘 ${done}개 · 덜 익힌 표현이 위에 있어요. 따라 말하고, 영작에서 직접 쓰고, 복습을 통과하면 단계가 올라가요.</div><div class="card">${list.map((e) => `<div class="item"><div class="row spread"><b>${esc(e.k)}</b>${ygBtn(e.k)}</div><div class="ko">${esc(e.ko || "")}</div><div class="steps">${STAGES.map(([k, l]) => `<span class="step ${e[k] ? "on" : ""}">${l}</span>`).join("")}</div><div class="acts">${sayBtns(e.k)}</div></div>`).join("")}</div>`
+    const done = list.filter((e) => exprDone(e) === STAGES.length).length;
+    body.innerHTML = list.length ? `<div class="small muted" style="margin:0 2px 6px">저장한 핵심 표현 ${list.length}개 · 완전히 익힘 ${done}개 · 덜 익힌 표현이 위에 있어요. 듣고 받아쓰고, 따라 말하고, 영작에서 직접 쓰고, 복습을 통과하면 단계가 올라가요.</div><div class="card">${list.map((e) => `<div class="item"><div class="row spread"><b>${esc(e.k)}</b>${ygBtn(e.k)}</div><div class="ko">${esc(e.ko || "")}</div><div class="steps">${STAGES.map(([k, l]) => `<span class="step ${e[k] ? "on" : ""}">${l}</span>`).join("")}</div><div class="acts">${sayBtns(e.k)}</div></div>`).join("")}</div>`
       : `<div class="card empty">☆ 저장한 문장의 핵심 표현이 여기에 모여요.<br><span class="small">단계가 올라가는 걸 확인하며 '쓸 수 있는 표현'으로 만들어 보세요.</span></div>`;
   } else if (vaultMode === "speakrec") {
     const recs = Object.entries(S.speak).map(([k, r]) => ({ k, ...r }));

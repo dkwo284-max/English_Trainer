@@ -199,3 +199,13 @@ html, body { overflow-x: hidden; }
 .step { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
 .step.on { background: var(--good-soft); color: var(--good); font-weight: 700; }
 .step.on::before { content: "✓ "; }
+
+/* 받아쓰기 · 3단 루틴 */
+.dict-top { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+.dict-ans { font-size: 17px; line-height: 1.9; margin-top: 8px; }
+.dw-ok { color: var(--good); font-weight: 600; }
+.dw-no { color: var(--bad); font-weight: 700; text-decoration: underline wavy; text-underline-offset: 4px; }
+.steps3 { display: flex; gap: 6px; margin: 0 0 10px; font-size: 12px; }
+.steps3 span { flex: 1; text-align: center; padding: 5px 4px; border-radius: 8px; background: var(--surface-2); color: var(--muted); }
+.steps3 span.cur { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.steps3 span.done { background: var(--good-soft); color: var(--good); }

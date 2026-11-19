@@ -94,6 +94,25 @@ async function push() {
 window.addEventListener("online", () => { if (dirty) push(); });
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && dirty) push(); });
 
+
+// 한자·가나 제거 (AI 가 한국어 풀이에 섞은 경우). 바뀐 게 있으면 true
+const HAN_RE = /[\u2E80-\u2FDF\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]/g;
+function cleanHan(o) {
+  let changed = false;
+  const fix = (v) => {
+    if (typeof v === "string") {
+      if (!HAN_RE.test(v)) { HAN_RE.lastIndex = 0; return v; }
+      HAN_RE.lastIndex = 0; changed = true;
+      return v.replace(HAN_RE, "").replace(/\(\s*\)/g, "").replace(/\s+([,.!?])/g, "$1").replace(/,\s*,/g, ",").replace(/^[,\s]+|[,\s]+$/g, "").replace(/\s{2,}/g, " ");
+    }
+    if (Array.isArray(v)) return v.map(fix);
+    if (v && typeof v === "object") { for (const k of Object.keys(v)) v[k] = fix(v[k]); }
+    return v;
+  };
+  fix(o);
+  return changed;
+}
+
 async function login(code) {
   CODE = code.trim();
   lsSet("et:code", CODE);
@@ -111,6 +130,8 @@ async function login(code) {
       setDot("ok", "동기화됨");
     } else setDot("err", r.data.error || "서버 연결 실패 — 이 기기에만 저장");
   } catch { setDot("err", "오프라인 — 이 기기에만 저장"); online = false; }
+  const cleaned = cleanHan(S);   // 예전에 저장된 시나리오·문장에 섞인 한자 제거
+  if (cleaned) save();
   lsSet("et:s:" + CODE, JSON.stringify(S));
   $("#login").hidden = true; $("#app").hidden = false;
   $("#codeLabel").textContent = CODE;

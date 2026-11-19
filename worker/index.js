@@ -71,7 +71,7 @@ async function handleState(request, env) {
 const SYS = `You are a friendly English speaking coach for a Korean adult living in Auckland, New Zealand.
 Write natural, spoken, everyday English that any native speaker (NZ, US, UK, AU) understands instantly.
 Reflect Kiwi everyday life and culture (e.g. "heaps", "keen", "sweet as", "no worries", "togs", "jandals", "dairy", "tea" for dinner, "bach", "kia ora", school pick-up, rugby, BBQs, weather small talk) but keep slang light and always explain it in Korean.
-Korean explanations must be short, plain Korean (존댓말 아님, 해설체). Output strict JSON only, no markdown.`;
+Korean explanations must be short, plain Korean (존댓말 아님, 해설체) written ONLY in Hangul, English and digits. NEVER use Chinese characters (漢字/한자/汉字), Japanese kana/kanji or any other script anywhere, even in parentheses. Output strict JSON only, no markdown.`;
 
 const TASKS = {
   dialogue: ({ scenario, level }) => `Create a 12-line spoken dialogue for this situation: "${scenario}".
@@ -151,6 +151,15 @@ function parseJsonLoose(text) {
   if (i >= 0 && j > i) { try { return JSON.parse(t.slice(i, j + 1)); } catch {} }
   throw new Error("형식 오류");
 }
+// 한자·가나가 섞여 나오는 문제 방지 (일부 모델이 한국어 풀이에 漢字를 섞음): 감지되면 다른 모델로 넘기고, 끝내 남으면 제거
+const HAN = /[\u2E80-\u2FDF\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]/;
+const hasHan = (r) => HAN.test(JSON.stringify(r));
+function stripHan(v) {
+  if (typeof v === "string") return v.replace(new RegExp(HAN.source, "g"), "").replace(/\(\s*\)/g, "").replace(/\s+([,.!?])/g, "$1").replace(/,\s*,/g, ",").replace(/^[,\s]+|[,\s]+$/g, "").replace(/\s{2,}/g, " ");
+  if (Array.isArray(v)) return v.map(stripHan);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, stripHan(x)]));
+  return v;
+}
 const VALID = {
   word: (r) => r && typeof r.ko === "string" && r.ko,
   naturalize: (r) => r && typeof r.best === "string" && r.best,
@@ -161,7 +170,7 @@ const VALID = {
 };
 async function callCF(env, prompt, task, models = CF_MODELS, opt = {}) {
   if (!env.AI) throw new Error("no-ai-binding");
-  let lastErr;
+  let lastErr, hanRes;
   for (const model of models) {
     try {
       const out = await Promise.race([
@@ -173,15 +182,21 @@ async function callCF(env, prompt, task, models = CF_MODELS, opt = {}) {
       ]);
       const text = typeof out === "string" ? out : out?.response ?? out?.choices?.[0]?.message?.content ?? "";
       const res = typeof text === "object" ? text : parseJsonLoose(text);
+      if (hasHan(res)) { hanRes = res; lastErr = new Error("한자 혼입"); continue; }   // 다른 모델로 다시 시도
       if (!VALID[task] || VALID[task](res)) return res;
       lastErr = new Error("내용 부족");
     } catch (e) { lastErr = e; }
   }
+  if (hanRes && (!VALID[task] || VALID[task](hanRes))) return hanRes;   // 모든 모델이 한자를 섞으면 마지막 결과의 한자를 제거해서 사용
   throw lastErr || new Error("workers-ai 실패");
 }
 
 // 빠른 작업은 Workers AI 와 Gemini 를 동시에 호출해 먼저 온 유효한 답을 쓴다
 async function callAI(env, prompt, task, engine) {
+  const r = await callAI0(env, prompt, task, engine);
+  return hasHan(r) ? stripHan(r) : r;   // 모든 경로가 한자를 못 거르면 마지막으로 제거
+}
+async function callAI0(env, prompt, task, engine) {
   const t0 = Date.now();
   const tag = (via) => (r) => { if (r && typeof r === "object") { r._via = via; r._ms = Date.now() - t0; } return r; };
   if (engine === "best") {   // 정밀 풀이: 큰 모델 우선 (Gemini Flash → Llama 70B), 느려도 되는 두 번째 요청용
@@ -240,7 +255,7 @@ async function handleAI(request, env) {
   const wkey = wbase ? `wc2:${engine}:${wbase}` : "";
   if (wbase && env.STORE) {
     const hit = (await env.STORE.get(`wc2:best:${wbase}`)) || (engine === "fast" ? await env.STORE.get(`wc2:fast:${wbase}`) : null);
-    if (hit) { const r = JSON.parse(hit); return json({ result: r, cached: true, best: !!r._best }); }
+    if (hit) { const r = JSON.parse(hit); if (!hasHan(r)) return json({ result: r, cached: true, best: !!r._best }); }
   }
   const day = nzToday();
   if (env.STORE) {

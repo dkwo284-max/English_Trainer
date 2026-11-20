@@ -209,3 +209,36 @@ html, body { overflow-x: hidden; }
 .steps3 span { flex: 1; text-align: center; padding: 5px 4px; border-radius: 8px; background: var(--surface-2); color: var(--muted); }
 .steps3 span.cur { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
 .steps3 span.done { background: var(--good-soft); color: var(--good); }
+
+/* 훈련 시각화: 숙련도 칩·의미 지도·문장 구조·타임라인 */
+.trchips.wrap2 { flex-wrap: wrap; }
+.chip-g { flex: none; align-self: center; font-size: 12px; font-weight: 800; color: var(--muted); padding: 0 2px 0 6px; }
+.chip.trc { position: relative; padding-bottom: 10px; }
+.chip.trc i { position: absolute; left: 10px; right: 10px; bottom: 4px; height: 3px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.chip.trc i::after { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--w); background: var(--good); }
+.chip.trc.on i { background: color-mix(in srgb, var(--accent-ink) 30%, transparent); }
+.chip.trc.on i::after { background: var(--accent-ink); }
+.chip.trc.weak::before { content: ""; position: absolute; top: 4px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
+.visual { margin-top: 12px; }
+.vmap { display: flex; flex-direction: column; align-items: center; }
+.vcenter { background: var(--accent); color: var(--accent-ink); border-radius: 16px; padding: 10px 16px; text-align: center; max-width: 100%; }
+.vcenter b { display: block; font-size: 22px; } .vcenter span { font-size: 13px; opacity: .9; }
+.vbranches { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin-top: 18px; padding-top: 10px; border-top: 2px solid var(--accent-soft); }
+.vbranches::before { content: ""; position: absolute; top: -18px; left: 50%; width: 2px; height: 18px; background: var(--accent-soft); }
+.vbr { position: relative; display: block; text-decoration: none; color: inherit; background: var(--surface-2); border-radius: 12px; padding: 8px 10px; border-left: 4px solid var(--accent); }
+.vbr::before { content: ""; position: absolute; top: -12px; left: 18px; width: 2px; height: 12px; background: var(--accent-soft); }
+.vbr b { display: block; font-size: 14px; } .vbr span { font-size: 12px; color: var(--accent); font-weight: 600; }
+.item.flash { animation: flash 1.2s; }
+@keyframes flash { 0%, 60% { background: var(--accent-soft); } 100% { background: transparent; } }
+.fdiag { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
+.fb, .pb { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 10px; padding: 6px 10px; min-width: 48px; }
+.fb b { font-size: 18px; } .fb i, .pb i { font-style: normal; font-size: 11px; opacity: .8; }
+.pblocks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.pb { padding: 4px 8px; } .pb b { font-size: 13px; font-weight: 600; }
+.fb.S, .pb.S { background: #dbeafe; color: #1e3a8a; } .fb.V, .pb.V { background: #fee2e2; color: #7f1d1d; }
+.fb.O, .pb.O, .fb.IO, .pb.IO, .fb.DO, .pb.DO { background: #dcfce7; color: #14532d; }
+.fb.C, .pb.C, .fb.OC, .pb.OC { background: #fef3c7; color: #78350f; }
+.fb.X, .pb.X { background: var(--surface-2); color: var(--muted); border: 1px dashed var(--line); }
+.rel { align-self: center; font-weight: 800; color: var(--muted); }
+.tl { width: 100%; height: auto; display: block; }
+.tform { margin-top: 4px; } .tform .tag { font-size: 13px; }

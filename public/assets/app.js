@@ -23,14 +23,14 @@ function toast(msg, ms = 2200) {
 // ── 상태 & 동기화 ───────────────────────────────────────
 let CODE = "";
 let S = null;
-const blank = () => ({ v: 1, rev: 0, created: today(), saved: [], scenarios: [], wrong: [], words: [], history: {}, done: {}, expr: {}, speak: {}, errors: [], settings: { accent: "en-US", rate: 0.95, showKo: true } });
+const blank = () => ({ v: 1, rev: 0, created: today(), saved: [], scenarios: [], wrong: [], words: [], history: {}, done: {}, expr: {}, speak: {}, train: {}, errors: [], settings: { accent: "en-US", rate: 0.95, showKo: true } });
 
 function fix(s) {
   const b = blank();
   s = Object.assign(b, s || {});
   s.settings = Object.assign(blank().settings, s.settings || {});
   for (const k of ["saved", "scenarios", "wrong", "words", "errors"]) if (!Array.isArray(s[k])) s[k] = [];
-  for (const k of ["expr", "speak"]) if (!s[k] || typeof s[k] !== "object" || Array.isArray(s[k])) s[k] = {};
+  for (const k of ["expr", "speak", "train"]) if (!s[k] || typeof s[k] !== "object" || Array.isArray(s[k])) s[k] = {};
   return s;
 }
 
@@ -63,6 +63,7 @@ function mergeStates(a, b) {
   out.settings = Object.assign({}, b.settings, a.settings);
   for (const [k, v] of Object.entries(a.expr || {})) out.expr[k] = Object.assign({}, v, out.expr[k] || {});
   for (const [k, v] of Object.entries(a.speak || {})) { const c = out.speak[k]; if (!c || (v.at || "") > (c.at || "")) out.speak[k] = v; }
+  for (const [k, v] of Object.entries(a.train || {})) { const c = out.train[k]; if (!c || (v.n || 0) > (c.n || 0)) out.train[k] = v; }
   const eid = new Set(out.errors.map((e) => e.id));
   for (const e of a.errors || []) if (!eid.has(e.id)) out.errors.push(e);
   out.errors = out.errors.sort((x, y) => (y.at || "").localeCompare(x.at || "")).slice(0, 300);
@@ -477,7 +478,7 @@ function quiz(box, items, opts = {}) {
 }
 
 // ── 화면 ────────────────────────────────────────────────
-const TITLES = { home: "홈", speak: "오늘의 스피킹", write: "영작 훈련", train: "동사·5형식", vault: "복습·보관함" };
+const TITLES = { home: "홈", speak: "오늘의 스피킹", write: "영작 훈련", train: "동사·5형식·시제", vault: "복습·보관함" };
 let TAB = "home";
 function go(tab) {
   if (!TITLES[tab]) tab = "home";
@@ -911,49 +912,112 @@ function newWritingSheet() {
   };
 }
 
-// 훈련: 기본동사 · 5형식
-let trainMode = "verb", verbPick = null, formPick = null;
+// 훈련: 기본동사 · 5형식 · 시제
+let trainMode = "verb", verbPick = null, formPick = null, tensePick = null;
+const ROLE = { S: "주어", V: "동사", O: "목적어", C: "보어", IO: "~에게", DO: "~을/를", OC: "목적격 보어" };
+function parseParts(p) {
+  return (p || "").split("|").map((x) => { const t = x.match(/\(([^)]*)\)\s*$/); return { w: x.replace(/\([^)]*\)\s*$/, "").replace(/[()]/g, "").trim(), tag: t ? t[1] : "" }; }).filter((x) => x.w);
+}
+// 예문 성분 블록: 단어 덩어리 위, 역할 이름 아래
 function partsHtml(p) {
-  if (!p) return "";
-  return `<div class="parts">${p.split("|").map((s) => { const m = s.match(/\((S|V|O|C|IO|DO|OC)\)/); return `<span class="${m ? m[1] : ""}">${esc(s.trim())}</span>`; }).join("")}</div>`;
+  const segs = parseParts(p); if (!segs.length) return "";
+  return `<div class="pblocks">${segs.map((x) => `<span class="pb ${/^(S|V|O|C|IO|DO|OC)$/.test(x.tag) ? x.tag : "X"}"><b>${esc(x.w)}</b><i>${esc(ROLE[x.tag] || x.tag || "")}</i></span>`).join("")}</div>`;
+}
+// 5형식 구조 그림: 성분 블록 + 관계(=, →)
+function formDiagram(n) {
+  const B = (t) => `<span class="fb ${t}"><b>${t}</b><i>${ROLE[t]}</i></span>`;
+  const rows = {
+    1: [B("S") + B("V") + `<span class="fb X"><b>+</b><i>장소·시간</i></span>`, "주어와 동사만으로 문장이 끝나요. 뒤는 꾸밈말이에요."],
+    2: [B("S") + B("V") + B("C"), "S = C — 보어가 주어를 설명해요 (You look tired: you = tired)."],
+    3: [B("S") + B("V") + B("O"), "동사가 목적어 하나를 받아요 (무엇을)."],
+    4: [B("S") + B("V") + B("IO") + `<span class="rel">→</span>` + B("DO"), "누구에게(IO) 무엇을(DO) — 주다·보내다·보여 주다 류 동사."],
+    5: [B("S") + B("V") + B("O") + B("OC"), "O = OC — 목적격 보어가 목적어의 상태·행동을 설명해요 (made me happy: me = happy)."],
+  }[n];
+  return `<div class="fdiag">${rows[0]}</div><p class="small muted" style="margin:6px 0 0">${esc(rows[1])}</p>`;
+}
+// 기본동사 의미 지도: 핵심 이미지에서 뜻이 가지 치는 그림
+function verbMap(set, items) {
+  const label = (it) => { const n = it.note || ""; const m = n.match(/:\s*(.+)$/) || n.match(/=\s*(.+)$/); return (m ? m[1] : n).replace(/\(.*?\)/g, "").trim() || it.ko; };
+  const head = (it) => { const m = (it.note || "").match(/^([A-Za-z' +.]+?)\s*[:=]/); return m ? m[1].trim() : ""; };
+  return `<div class="vmap"><div class="vcenter"><b>${esc(set.v)}</b><span>${esc(set.core)}</span></div>
+    <div class="vbranches">${items.map((it, i) => `<a class="vbr" href="#ex-${i}" data-ex="${i}"><b>${esc(label(it))}</b>${head(it) ? `<span>${esc(head(it))}</span>` : ""}</a>`).join("")}</div></div>`;
+}
+// 시제 타임라인 (0~100, 지금 = 50)
+function timelineSvg(tl) {
+  const X = (v) => 14 + v * 2.92, Y = 66;
+  const bars = (tl.bars || []).map(([a, b, k]) => k === "d"
+    ? `<rect x="${X(a)}" y="${Y - 8}" width="${X(b) - X(a)}" height="16" rx="5" fill="none" stroke="var(--warn)" stroke-width="2" stroke-dasharray="5 4"/><text x="${(X(a) + X(b)) / 2}" y="${Y + 4}" text-anchor="middle" font-size="11" fill="var(--warn)" font-weight="700">상상</text>`
+    : `<rect x="${X(a)}" y="${Y - 6}" width="${X(b) - X(a)}" height="12" rx="4" fill="${k === "p" ? "url(#stripe)" : "var(--accent)"}" stroke="var(--accent)" stroke-width="1.5"/>${k === "s" ? `<path d="M${X(b) - 2} ${Y - 9} L${X(b) + 6} ${Y} L${X(b) - 2} ${Y + 9}" fill="var(--accent)"/>` : ""}`).join("");
+  const dots = (tl.dots || []).map((d) => `<circle cx="${X(d)}" cy="${Y}" r="${(tl.dots || []).length > 2 ? 5 : 7}" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/>`).join("");
+  const refs = (tl.refs || []).map(([x, l]) => `<path d="M${X(x)} ${Y - 26} L${X(x) - 5} ${Y - 34} L${X(x) + 5} ${Y - 34} Z" fill="var(--text)"/><text x="${X(x)}" y="${Y - 38}" text-anchor="middle" font-size="11" fill="var(--text)" font-weight="700">${esc(l)}</text>`).join("");
+  return `<svg class="tl" viewBox="0 0 320 100" role="img" aria-label="시제 타임라인">
+    <defs><pattern id="stripe" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--accent-soft)"/><rect width="3" height="6" fill="var(--accent)"/></pattern></defs>
+    <line x1="10" y1="${Y}" x2="306" y2="${Y}" stroke="var(--line)" stroke-width="3"/><path d="M306 ${Y - 5} L314 ${Y} L306 ${Y + 5} Z" fill="var(--line)"/>
+    <line x1="${X(50)}" y1="${Y - 22}" x2="${X(50)}" y2="${Y + 18}" stroke="var(--muted)" stroke-dasharray="3 3"/>
+    ${bars}${dots}${refs}
+    <text x="${X(12)}" y="97" text-anchor="middle" font-size="11" fill="var(--muted)">과거</text><text x="${X(50)}" y="97" text-anchor="middle" font-size="11" fill="var(--muted)">지금</text><text x="${X(88)}" y="97" text-anchor="middle" font-size="11" fill="var(--muted)">미래</text>
+    ${tl.label ? `<text x="10" y="13" font-size="11" fill="var(--muted)">${esc(tl.label)}</text>` : ""}</svg>`;
+}
+// 숙련도: 훈련 퀴즈 정답률
+const trainStat = (key) => S.train[key] || { n: 0, ok: 0 };
+function trainChip(key, label, on) {
+  const t = trainStat(key), acc = t.n ? Math.round((t.ok / t.n) * 100) : -1;
+  return `<button class="chip trc ${on ? "on" : ""} ${t.n >= 3 && acc < 60 ? "weak" : ""}" data-k="${esc(key.split(":")[1])}" title="${t.n ? `정답률 ${acc}% · ${t.n}문장` : "아직 연습 전"}"><span>${esc(label)}</span><i style="--w:${Math.max(0, acc)}%"></i></button>`;
 }
 function renderTrain(v) {
   verbPick = verbPick || VERBS[dayNum(today()) % VERBS.length].v;
   formPick = formPick || (dayNum(today()) % 5) + 1;
-  const isVerb = trainMode === "verb";
-  const set = isVerb ? VERBS.find((x) => x.v === verbPick) : FORMS.find((f) => f.n === formPick);
-  // YouGlish 검색어: 동사는 메모의 숙어("have a word")·없으면 동사 자체, 5형식은 문장 성분 중 동사+뒤 한 덩어리("made me")
+  tensePick = tensePick || TENSES[dayNum(today()) % TENSES.length].id;
+  const mode = trainMode, isVerb = mode === "verb", isTense = mode === "tense";
+  const set = isVerb ? VERBS.find((x) => x.v === verbPick) : isTense ? TENSES.find((t) => t.id === tensePick) : FORMS.find((f) => f.n === formPick);
+  const key = isVerb ? "verb:" + set.v : isTense ? "tense:" + set.id : "form:" + set.n;
+  // YouGlish 검색어: 동사는 메모의 숙어("have a word")·없으면 동사 자체, 5형식은 동사+뒤 한 덩어리("made me"), 시제는 시제 부분("I've lived")
   const ygPhraseOf = (it) => {
+    if (isTense) return it.hl || it.en;
     if (isVerb) { const m = (it.note || "").match(/^([A-Za-z' ]+?)\s*:/); return m ? m[1].trim() : set.v; }
-    const segs = (it.parts || "").split("|").map((x) => { const t = x.match(/\(([^)]*)\)\s*$/); return { w: x.replace(/\([^)]*\)\s*$/, "").replace(/[()]/g, "").trim(), tag: t ? t[1] : "" }; }).filter((x) => x.w);
-    const vi = segs.findIndex((x) => /^V$/.test(x.tag));
+    const segs = parseParts(it.parts), vi = segs.findIndex((x) => x.tag === "V");
     return vi >= 0 ? [segs[vi].w, segs[vi + 1] ? segs[vi + 1].w : ""].join(" ").trim() : it.en;
   };
-  const extraKey = (isVerb ? "verb:" : "form:") + (isVerb ? verbPick : formPick);
+  const extraKey = key;
   const extra = (S.done["ai:" + extraKey] || []);
   const items = [...set.items, ...extra];
+  const st = trainStat(key), acc = st.n ? Math.round((st.ok / st.n) * 100) : null;
+  const chips = isVerb ? VERBS.map((x) => trainChip("verb:" + x.v, x.v, x.v === verbPick)).join("")
+    : isTense ? ["시제", "가정법"].map((g) => `<span class="chip-g">${g}</span>` + TENSES.filter((t) => t.group === g).map((t) => trainChip("tense:" + t.id, t.name, t.id === tensePick)).join("")).join("")
+    : FORMS.map((f) => trainChip("form:" + f.n, f.n + "형식", f.n === formPick)).join("");
+  const visual = isVerb ? verbMap(set, set.items) : isTense ? `${timelineSvg(set.tl)}<div class="tform"><span class="tag">${esc(set.form)}</span></div><p class="small" style="margin:6px 0 0"><b>언제?</b> ${esc(set.use)}</p><p class="small muted" style="margin:4px 0 0">💡 ${esc(set.tip)}</p>` : formDiagram(set.n);
   v.innerHTML = `
-    <div class="seg" id="trSeg"><button data-m="verb">기본동사</button><button data-m="form">5형식</button></div>
-    <div class="chips" id="trChips">${isVerb ? VERBS.map((x) => `<button class="chip ${x.v === verbPick ? "on" : ""}" data-k="${x.v}">${x.v}</button>`).join("")
-      : FORMS.map((f) => `<button class="chip ${f.n === formPick ? "on" : ""}" data-k="${f.n}">${f.n}형식</button>`).join("")}</div>
+    <div class="seg" id="trSeg"><button data-m="verb">기본동사</button><button data-m="form">5형식</button><button data-m="tense">시제·가정법</button></div>
+    <div class="chips trchips ${isTense ? "wrap2" : ""}" id="trChips">${chips}</div>
     <div class="card">
-      <h2>${isVerb ? esc(set.v) : esc(set.name)}</h2>
-      <p class="verb-core">${esc(isVerb ? "핵심 이미지: " + set.core : set.desc)}</p>${isVerb ? `<div class="row wrap" style="margin-top:6px">${sayBtns(set.v)}<a class="act yg" href="${ygUrl(set.v)}" target="_blank" rel="noopener">▶ ${esc(set.v)} 실제 예문</a></div>` : ""}
-      <div class="row" style="margin-top:10px"><button class="btn primary" id="trQuiz" style="flex:1">✍️ 영작 퀴즈 ${items.length}문장</button><button class="btn" id="trMore">＋ AI 새 문장</button></div>
+      <div class="row spread"><h2>${esc(isVerb ? set.v : set.name)}</h2>${acc !== null ? `<span class="tag ${acc >= 80 ? "good" : acc < 60 ? "bad" : ""}">정답률 ${acc}% · ${st.n}문장</span>` : `<span class="small muted">아직 연습 전</span>`}</div>
+      ${isTense ? (set.ko.replace(/\s/g, "") === set.name.replace(/\s/g, "") ? "" : `<p class="verb-core">${esc(set.ko)}</p>`) : `<p class="verb-core">${esc(isVerb ? "핵심 이미지: " + set.core : set.desc)}</p>`}
+      ${isVerb ? `<div class="row wrap" style="margin-top:6px">${sayBtns(set.v)}<a class="act yg" href="${ygUrl(set.v)}" target="_blank" rel="noopener">▶ ${esc(set.v)} 실제 예문</a></div>` : ""}
+      <div class="visual">${visual}</div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" id="trQuiz" style="flex:1">✍️ 영작 퀴즈 ${items.length}문장</button><button class="btn" id="trMore">＋ AI 새 문장</button></div>
       <div id="trQ"></div>
     </div>
-    <div class="card" id="trList">${items.map((it) => `<div class="item"><div class="en">${tappable(it.en)}</div><div class="ko">${esc(it.ko)}</div>
-      ${isVerb ? `<div class="small muted" style="margin-top:4px">${esc(it.note || "")}</div>` : partsHtml(it.parts)}
-      <div class="acts">${sayBtns(it.en)}${ygBtn(ygPhraseOf(it))}${starBtn({ en: it.en, ko: it.ko, key: isVerb ? set.v : "", keyKo: it.note || "", src: isVerb ? "동사 " + set.v : set.name })}</div></div>`).join("")}</div>`;
+    <div class="card" id="trList">${items.map((it, i) => `<div class="item" id="ex-${i}"><div class="en">${tappable(it.en, isTense ? it.hl : "")}</div><div class="ko">${esc(it.ko)}</div>
+      ${isVerb ? `<div class="small muted" style="margin-top:4px">${esc(it.note || "")}</div>` : isTense ? "" : partsHtml(it.parts)}
+      <div class="acts">${sayBtns(it.en)}${ygBtn(ygPhraseOf(it))}${starBtn({ en: it.en, ko: it.ko, key: isVerb ? set.v : isTense ? it.hl || "" : "", keyKo: isTense ? set.ko : it.note || "", src: isVerb ? "동사 " + set.v : set.name })}</div></div>`).join("")}</div>`;
   [...$("#trSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.m === trainMode));
   $("#trSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { trainMode = b.dataset.m; renderTrain(v); } };
-  $("#trChips").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; if (isVerb) verbPick = b.dataset.k; else formPick = +b.dataset.k; renderTrain(v); };
-  $("#trQuiz").onclick = () => { $("#trList").hidden = true; quiz($("#trQ"), items.map((it) => ({ ko: it.ko, en: it.en, hint: isVerb ? set.v + " 사용" : set.name })), { kind: "drill", src: isVerb ? "동사 " + set.v : set.name, onDone: () => ($("#trList").hidden = false) }); };
+  $("#trChips").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; if (isVerb) verbPick = b.dataset.k; else if (isTense) tensePick = b.dataset.k; else formPick = +b.dataset.k; renderTrain(v); };
+  v.querySelectorAll("[data-ex]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); const el = $("#ex-" + a.dataset.ex); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1200); } }));
+  const hint = isVerb ? set.v + " 사용" : isTense ? `${set.name} (${set.form})` : set.name;
+  $("#trQuiz").onclick = () => {
+    $("#trList").hidden = true;
+    quiz($("#trQ"), items.map((it) => ({ ko: it.ko, en: it.en, hint })), {
+      kind: "drill", src: isVerb ? "동사 " + set.v : set.name,
+      onEach: (_, ok) => { const t = { ...trainStat(key) }; t.n++; if (ok) t.ok++; t.at = today(); S.train[key] = t; save(); },
+      onDone: () => renderTrain(v),
+    });
+  };
   $("#trMore").onclick = async () => {
     const b = $("#trMore"); b.disabled = true; b.innerHTML = '<span class="spinner"></span>';
     try {
-      const x = await ai("drill", { kind: isVerb ? "verb" : "form", item: isVerb ? set.v : set.name });
-      const add = (x.items || []).filter((i) => i.en && i.ko).map((i) => ({ en: i.en, ko: i.ko, note: i.note || "", parts: i.parts || "" }));
+      const x = await ai("drill", { kind: mode, item: isVerb ? set.v : isTense ? `${set.ko} — ${set.form}` : set.name });
+      const add = (x.items || []).filter((i) => i.en && i.ko).map((i) => ({ en: i.en, ko: i.ko, note: i.note || "", parts: i.parts || "", hl: i.hl || "" }));
       S.done["ai:" + extraKey] = [...add, ...extra].slice(0, 30); save(); renderTrain(v); toast(`새 문장 ${add.length}개 추가`);
     } catch (e) { toast(e.message); b.disabled = false; b.textContent = "＋ AI 새 문장"; }
   };

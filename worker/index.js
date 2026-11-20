@@ -104,9 +104,9 @@ JSON only, same fields: {"word":"${word}","ipaUS":"/.../","ipaUK":"/.../","pos":
 This is for English composition practice: the learner sees the Korean and must say it in English.
 JSON: {"title":"short Korean title","lines":[{"sp":"A","ko":"natural Korean","en":"natural spoken English model answer","hint":"key words or pattern hint in English (2-4 words)"}]}`,
 
-  drill: ({ kind, item }) => `Make 6 new practice sentences for Korean learners for ${kind === "verb" ? `the basic verb "${item}" (varied core meanings and phrasal uses)` : `English sentence pattern ${item} (5형식 분류 기준)`}.
+  drill: ({ kind, item }) => `Make 6 new practice sentences for Korean learners for ${kind === "verb" ? `the basic verb "${item}" (varied core meanings and phrasal uses)` : kind === "tense" ? `the English tense/mood "${item}" (natural situations where a native would really use it)` : `English sentence pattern ${item} (5형식 분류 기준)`}.
 Spoken, everyday, NZ life flavour.
-JSON: {"items":[{"en":"...","ko":"...","note":"Korean: which meaning/structure is used","parts":"for sentence patterns: label parts like S | V | O | C, else empty"}]}`,
+JSON: {"items":[{"en":"...","ko":"...","note":"Korean: which meaning/structure is used","parts":"for sentence patterns: label parts like S | V | O | C, else empty","hl":"for tenses: the exact verb phrase in en that forms the tense (e.g. \"I've lived\"), else empty"}]}`,
 };
 
 async function callGemini(env, prompt, task) {

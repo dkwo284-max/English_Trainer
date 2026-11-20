@@ -922,6 +922,13 @@ function renderTrain(v) {
   formPick = formPick || (dayNum(today()) % 5) + 1;
   const isVerb = trainMode === "verb";
   const set = isVerb ? VERBS.find((x) => x.v === verbPick) : FORMS.find((f) => f.n === formPick);
+  // YouGlish 검색어: 동사는 메모의 숙어("have a word")·없으면 동사 자체, 5형식은 문장 성분 중 동사+뒤 한 덩어리("made me")
+  const ygPhraseOf = (it) => {
+    if (isVerb) { const m = (it.note || "").match(/^([A-Za-z' ]+?)\s*:/); return m ? m[1].trim() : set.v; }
+    const segs = (it.parts || "").split("|").map((x) => { const t = x.match(/\(([^)]*)\)\s*$/); return { w: x.replace(/\([^)]*\)\s*$/, "").replace(/[()]/g, "").trim(), tag: t ? t[1] : "" }; }).filter((x) => x.w);
+    const vi = segs.findIndex((x) => /^V$/.test(x.tag));
+    return vi >= 0 ? [segs[vi].w, segs[vi + 1] ? segs[vi + 1].w : ""].join(" ").trim() : it.en;
+  };
   const extraKey = (isVerb ? "verb:" : "form:") + (isVerb ? verbPick : formPick);
   const extra = (S.done["ai:" + extraKey] || []);
   const items = [...set.items, ...extra];
@@ -931,13 +938,13 @@ function renderTrain(v) {
       : FORMS.map((f) => `<button class="chip ${f.n === formPick ? "on" : ""}" data-k="${f.n}">${f.n}형식</button>`).join("")}</div>
     <div class="card">
       <h2>${isVerb ? esc(set.v) : esc(set.name)}</h2>
-      <p class="verb-core">${esc(isVerb ? "핵심 이미지: " + set.core : set.desc)}</p>
+      <p class="verb-core">${esc(isVerb ? "핵심 이미지: " + set.core : set.desc)}</p>${isVerb ? `<div class="row wrap" style="margin-top:6px">${sayBtns(set.v)}<a class="act yg" href="${ygUrl(set.v)}" target="_blank" rel="noopener">▶ ${esc(set.v)} 실제 예문</a></div>` : ""}
       <div class="row" style="margin-top:10px"><button class="btn primary" id="trQuiz" style="flex:1">✍️ 영작 퀴즈 ${items.length}문장</button><button class="btn" id="trMore">＋ AI 새 문장</button></div>
       <div id="trQ"></div>
     </div>
     <div class="card" id="trList">${items.map((it) => `<div class="item"><div class="en">${tappable(it.en)}</div><div class="ko">${esc(it.ko)}</div>
       ${isVerb ? `<div class="small muted" style="margin-top:4px">${esc(it.note || "")}</div>` : partsHtml(it.parts)}
-      <div class="acts">${sayBtns(it.en)}${starBtn({ en: it.en, ko: it.ko, key: isVerb ? set.v : "", keyKo: it.note || "", src: isVerb ? "동사 " + set.v : set.name })}</div></div>`).join("")}</div>`;
+      <div class="acts">${sayBtns(it.en)}${ygBtn(ygPhraseOf(it))}${starBtn({ en: it.en, ko: it.ko, key: isVerb ? set.v : "", keyKo: it.note || "", src: isVerb ? "동사 " + set.v : set.name })}</div></div>`).join("")}</div>`;
   [...$("#trSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.m === trainMode));
   $("#trSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { trainMode = b.dataset.m; renderTrain(v); } };
   $("#trChips").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; if (isVerb) verbPick = b.dataset.k; else formPick = +b.dataset.k; renderTrain(v); };

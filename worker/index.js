@@ -174,7 +174,8 @@ async function callGemini(env, prompt, task) {
 }
 
 // ── Cloudflare Workers AI (같은 계정·키 불필요·빠름) ───────────
-const CF_MODELS = ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.1-8b-instruct-fast"];
+// 작은 모델(Llama 8B)은 한국어가 자모·같은 글자 반복으로 깨지는 일이 있어 제외하고 70B 를 예비로 씀
+const CF_MODELS = ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"];
 const CF_BEST = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast"];
 function parseJsonLoose(text) {
   const t = String(text || "").replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
@@ -186,6 +187,21 @@ function parseJsonLoose(text) {
 // 한자·가나가 섞여 나오는 문제 방지 (일부 모델이 한국어 풀이에 漢字를 섞음): 감지되면 다른 모델로 넘기고, 끝내 남으면 제거
 const HAN = /[\u2E80-\u2FDF\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]/;
 const hasHan = (r) => HAN.test(JSON.stringify(r));
+// 깨진 출력 감지: 낱자모(ㄹㄴㅇ…) 나열, 같은 글자 묶음의 긴 반복, 0/1 나열 — 모델이 반복 루프에 빠진 흔적
+const JAMO = /[\u3131-\u318E\u1100-\u11FF]/g;
+function badStr(t) {
+  if (typeof t !== "string" || !t) return false;
+  const j = (t.match(JAMO) || []).length;
+  return j >= 4 || /(.{1,6}?)\1{6,}/u.test(t) || /[01]{8,}/.test(t) || /[\uFFFD\u25A1\u25A0]/.test(t);
+}
+function hasBad(v) { if (typeof v === "string") return badStr(v); if (Array.isArray(v)) return v.some(hasBad); if (v && typeof v === "object") return Object.values(v).some(hasBad); return false; }
+function dropBad(v) {
+  if (typeof v === "string") return badStr(v) ? "" : v;
+  if (Array.isArray(v)) return v.map(dropBad).filter((x) => x !== "");
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, dropBad(x)]));
+  return v;
+}
+
 function stripHan(v) {
   if (typeof v === "string") return v.replace(new RegExp(HAN.source, "g"), "").replace(/\(\s*\)/g, "").replace(/\s+([,.!?])/g, "$1").replace(/,\s*,/g, ",").replace(/^[,\s]+|[,\s]+$/g, "").replace(/\s{2,}/g, " ");
   if (Array.isArray(v)) return v.map(stripHan);
@@ -214,6 +230,7 @@ async function callCF(env, prompt, task, models = CF_MODELS, opt = {}) {
       ]);
       const text = typeof out === "string" ? out : out?.response ?? out?.choices?.[0]?.message?.content ?? "";
       const res = typeof text === "object" ? text : parseJsonLoose(text);
+      if (hasBad(res)) { lastErr = new Error("깨진 출력"); continue; }   // 다른 모델로 다시 시도
       if (hasHan(res)) { hanRes = res; lastErr = new Error("한자 혼입"); continue; }   // 다른 모델로 다시 시도
       if (!VALID[task] || VALID[task](res)) return res;
       lastErr = new Error("내용 부족");
@@ -226,14 +243,15 @@ async function callCF(env, prompt, task, models = CF_MODELS, opt = {}) {
 // 빠른 작업은 Workers AI 와 Gemini 를 동시에 호출해 먼저 온 유효한 답을 쓴다
 async function callAI(env, prompt, task, engine) {
   const r = await callAI0(env, prompt, task, engine);
-  return hasHan(r) ? stripHan(r) : r;   // 모든 경로가 한자를 못 거르면 마지막으로 제거
+  const r2 = hasBad(r) ? dropBad(r) : r;   // 깨진 문장은 빈칸으로
+  return hasHan(r2) ? stripHan(r2) : r2;   // 모든 경로가 한자를 못 거르면 마지막으로 제거
 }
 async function callAI0(env, prompt, task, engine) {
   const t0 = Date.now();
   const tag = (via) => (r) => { if (r && typeof r === "object") { r._via = via; r._ms = Date.now() - t0; } return r; };
   if (engine === "best") {   // 정밀 풀이: 큰 모델 우선 (Gemini Flash → Llama 70B), 느려도 되는 두 번째 요청용
     const runs = [];
-    if (env.GEMINI_API_KEY) runs.push(callGemini(env, prompt, "best").then((r) => { if (VALID[task] && !VALID[task](r)) throw new Error("내용 부족"); return tag("gemini-best")(r); }));
+    if (env.GEMINI_API_KEY) runs.push(callGemini(env, prompt, "best").then((r) => { if ((VALID[task] && !VALID[task](r)) || hasBad(r)) throw new Error("내용 부족·깨짐"); return tag("gemini-best")(r); }));
     if (env.AI) runs.push(callCF(env, prompt, task, CF_BEST).then(tag("llama70b")));
     if (!runs.length) throw new Error("AI 설정 없음");
     try { return await Promise.any(runs); } catch (e) { throw new Error((e.errors || []).map((x) => x.message).join(" / ") || "AI 실패"); }
@@ -242,7 +260,7 @@ async function callAI0(env, prompt, task, engine) {
     // 긴 생성(대화·영작 세트): Gemini 가 주 경로. Gemini 가 실패하거나 12초 안에 답이 없으면 Cloudflare(Llama 70B)로 백업을 시작해 먼저 온 유효한 답을 쓴다.
     const long = { maxTokens: 4000, timeout: 40000 };
     const gem = env.GEMINI_API_KEY
-      ? callGemini(env, prompt, task).then((r) => { if (VALID[task] && !VALID[task](r)) throw new Error("내용 부족"); return tag("gemini")(r); })
+      ? callGemini(env, prompt, task).then((r) => { if ((VALID[task] && !VALID[task](r)) || hasBad(r)) throw new Error("내용 부족·깨짐"); return tag("gemini")(r); })
       : Promise.reject(new Error("Gemini 키 없음"));
     if (!env.AI) return await gem;
     const backup = () => callCF(env, prompt, task, CF_BEST, long).then(tag("cloudflare-backup"));
@@ -256,7 +274,7 @@ async function callAI0(env, prompt, task, engine) {
   }
   const runs = [];
   if (env.AI) runs.push(callCF(env, prompt, task).then(tag("workers-ai")));
-  if (env.GEMINI_API_KEY) runs.push(callGemini(env, prompt, task).then((r) => { if (VALID[task] && !VALID[task](r)) throw new Error("내용 부족"); return tag("gemini")(r); }));
+  if (env.GEMINI_API_KEY) runs.push(callGemini(env, prompt, task).then((r) => { if ((VALID[task] && !VALID[task](r)) || hasBad(r)) throw new Error("내용 부족·깨짐"); return tag("gemini")(r); }));
   if (!runs.length) throw new Error("AI 설정 없음");
   try { return await Promise.any(runs); }
   catch (e) { throw new Error((e.errors || []).map((x) => x.message).join(" / ") || "AI 실패"); }

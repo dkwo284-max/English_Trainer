@@ -402,6 +402,9 @@ async function convert(text, out) {
   } catch (e) { out.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; }
 }
 
+// 깨진 AI 문장(낱자모 나열·같은 글자 반복·0/1 나열) 숨김
+const looksBroken = (t) => typeof t === "string" && (((t.match(/[\u3131-\u318E\u1100-\u11FF]/g) || []).length >= 4) || /(.{1,6}?)\1{6,}/u.test(t) || /[01]{8,}/.test(t) || /[\uFFFD\u25A1\u25A0]/.test(t));
+
 // ── 퀴즈(영작·드릴·복습 공통) ───────────────────────────
 // items: [{ko, en, hint?, sp?, context?}] / opts.kind: write|drill|review / onDone()
 function quiz(box, items, opts = {}) {
@@ -454,8 +457,8 @@ function quiz(box, items, opts = {}) {
         ${mine && r.corrected && norm(r.corrected) !== norm(mine) ? `<div class="pair"><small>교정</small>${esc(r.corrected)}</div>` : ""}
         <div class="pair"><small>원어민이라면</small><span class="en">${tappable(r.natural || it.en)}</span></div>
         ${norm(r.natural) !== norm(it.en) ? `<div class="pair"><small>모범 답안</small>${esc(it.en)}</div>` : ""}
-        ${r.why ? `<p class="small" style="margin:8px 0 0">${esc(r.why)}</p>` : ""}
-        ${(r.points || []).length ? `<ul>${r.points.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
+        ${r.why && !looksBroken(r.why) ? `<p class="small" style="margin:8px 0 0">${esc(r.why)}</p>` : ""}
+        ${(r.points || []).filter((p) => !looksBroken(p)).length ? `<ul>${r.points.filter((p) => !looksBroken(p)).map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
         <div class="acts">${sayBtns(r.natural || it.en)}${starBtn({ en: r.natural || it.en, ko: it.ko, src: opts.src || "" })}</div>
       </div>
       <div class="row" style="margin-top:10px">${!ok && r.offline ? `<button class="btn" id="qOk">맞은 걸로</button>` : ""}<button class="btn primary big" id="qNext">${i + 1 < items.length ? "다음 →" : opts.noSummary ? "다음 단계 →" : "결과 보기"}</button></div>`;

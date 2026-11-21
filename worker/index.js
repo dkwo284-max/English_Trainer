@@ -73,6 +73,27 @@ Write natural, spoken, everyday English that any native speaker (NZ, US, UK, AU)
 Reflect Kiwi everyday life and culture (e.g. "heaps", "keen", "sweet as", "no worries", "togs", "jandals", "dairy", "tea" for dinner, "bach", "kia ora", school pick-up, rugby, BBQs, weather small talk) but keep slang light and always explain it in Korean.
 Korean explanations must be short, plain Korean (존댓말 아님, 해설체) written ONLY in Hangul, English and digits. NEVER use Chinese characters (漢字/한자/汉字), Japanese kana/kanji or any other script anywhere, even in parentheses. Output strict JSON only, no markdown.`;
 
+// 5형식 생성 규칙과 검증 (AI 가 다른 형식 문장을 섞어 내는 문제 방지)
+const FORM_SPEC = {
+  1: "S + V only (intransitive verb, no object/complement; optional adverbial phrases). e.g. The baby finally slept. / We arrived just in time.",
+  2: "S + V + C (linking verb be/look/sound/feel/seem/get/become + complement describing the subject). e.g. You look exhausted.",
+  3: "S + V + O (transitive verb with exactly one direct object, no indirect object, no object complement). e.g. I need a coffee.",
+  4: "S + V + IO + DO (give/send/show/tell/buy/lend/make/get + person + thing, NOT using to/for). e.g. Can you send me the link?",
+  5: "S + V + O + OC (make/keep/let/have/get/find/call/want/leave/see/hear + object + object complement: adjective, noun, bare infinitive, to-infinitive, -ing or past participle describing the OBJECT). e.g. The news made me so happy. / Please keep the door closed. / I want you to be honest.",
+};
+const FORM_TAGS = { 1: ["S", "V"], 2: ["S", "V", "C"], 3: ["S", "V", "O"], 4: ["S", "V", "IO", "DO"], 5: ["S", "V", "O", "OC"] };
+function partTags(parts) {
+  return String(parts || "").split("|").map((x) => (x.match(/\(([^)]*)\)\s*$/) || [])[1] || "").map((t) => t.trim().toUpperCase()).filter((t) => /^(S|V|O|C|IO|DO|OC)$/.test(t));
+}
+function formOk(it, n) {
+  const want = FORM_TAGS[n]; if (!want || !it || !it.en || !it.ko) return false;
+  const tags = partTags(it.parts);
+  if (tags.join(",") !== want.join(",")) return false;
+  // 라벨 붙인 덩어리가 실제 문장 안에 있어야 함 (가짜 라벨 방지)
+  const en = it.en.toLowerCase().replace(/[’]/g, "'");
+  return String(it.parts).split("|").every((x) => { const w = x.replace(/\([^)]*\)\s*$/, "").replace(/[()]/g, "").trim().toLowerCase().replace(/[’]/g, "'"); return !w || en.includes(w); });
+}
+
 const TASKS = {
   dialogue: ({ scenario, level }) => `Create a 12-line spoken dialogue for this situation: "${scenario}".
 Speakers alternate A, B, A, B ... (A has 6 lines, B has 6 lines). A is the learner's role (a Korean parent/resident in Auckland) unless the situation says otherwise.
@@ -84,8 +105,8 @@ JSON: {"title":"short Korean title","setting":"one-line Korean description","rol
 Give how a native speaker would naturally SAY it in conversation.
 JSON: {"best":"most natural spoken version","casual":"more casual/Kiwi version","polite":"more polite version","ko":"Korean meaning","notes":["short Korean notes on key choices (max 3)"],"key":"most useful phrase from best","keyKo":"its Korean meaning"}`,
 
-  correct: ({ ko, answer, mine, context }) => `Korean prompt: "${ko}"
-${context ? "Dialogue so far:\n" + context + "\n" : ""}${answer ? 'Reference answer: "' + answer + '"\n' : ""}Learner's English: "${mine}"
+  correct: ({ ko, answer, mine, context, target }) => `Korean prompt: "${ko}"
+${target ? "The learner is practising: " + target + ". The \"natural\" version MUST keep this same structure/tense (do not rephrase into a different sentence pattern or tense).\n" : ""}${context ? "Dialogue so far:\n" + context + "\n" : ""}${answer ? 'Reference answer: "' + answer + '"\n' : ""}Learner's English: "${mine}"
 Judge whether the learner's sentence is correct, natural spoken English that conveys the Korean meaning (other natural wordings are fine).
 JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of the learner's sentence (same if fine)","natural":"how a native would say it","why":"Korean explanation of the main problems or praise (1-3 sentences)","points":["short Korean grammar/expression points (max 3)"],"types":[up to 3 of exactly these labels for the learner's mistakes, empty array if none: "관사","시제","전치사","어순","어휘 선택","수 일치","구어체 표현","기타"]}`,
 
@@ -104,9 +125,20 @@ JSON only, same fields: {"word":"${word}","ipaUS":"/.../","ipaUK":"/.../","pos":
 This is for English composition practice: the learner sees the Korean and must say it in English.
 JSON: {"title":"short Korean title","lines":[{"sp":"A","ko":"natural Korean","en":"natural spoken English model answer","hint":"key words or pattern hint in English (2-4 words)"}]}`,
 
-  drill: ({ kind, item }) => `Make 6 new practice sentences for Korean learners for ${kind === "verb" ? `the basic verb "${item}" (varied core meanings and phrasal uses)` : kind === "tense" ? `the English tense/mood "${item}" (natural situations where a native would really use it)` : `English sentence pattern ${item} (5형식 분류 기준)`}.
+  drill: ({ kind, item }) => {
+    if (kind === "form") {
+      const n = parseInt(String(item).match(/\d/)?.[0] || "0", 10);
+      const spec = FORM_SPEC[n] || "";
+      return `Make 8 NEW everyday spoken English sentences for Korean learners that are ALL strictly English sentence pattern ${n} (5형식 분류 기준 ${n}형식): ${spec}
+Every sentence MUST follow exactly this structure — do NOT write sentences of other patterns (no "go to ... to buy ..." style 1형식 sentences when asked for 5형식, etc.).
+NZ daily-life flavour. Label every part in "parts" using exactly the tags of this pattern, written as "words (TAG)" separated by " | ", in sentence order, covering the whole core of the sentence (adverbs/time phrases may be added as "words (부사구)").
+Example for 5형식: "The news (S) | made (V) | me (O) | so happy (OC)". Example for 4형식: "She (S) | sent (V) | me (IO) | the link (DO)".
+JSON: {"items":[{"en":"...","ko":"natural Korean","note":"Korean: why this is ${n}형식 (one short line)","parts":"..."}]}`;
+    }
+    return `Make 6 new practice sentences for Korean learners for ${kind === "verb" ? `the basic verb "${item}" (varied core meanings and phrasal uses; every sentence must use "${item}")` : `the English tense/mood "${item}" (natural situations where a native would really use it; every sentence must use exactly this tense/mood)`}.
 Spoken, everyday, NZ life flavour.
-JSON: {"items":[{"en":"...","ko":"...","note":"Korean: which meaning/structure is used","parts":"for sentence patterns: label parts like S | V | O | C, else empty","hl":"for tenses: the exact verb phrase in en that forms the tense (e.g. \"I've lived\"), else empty"}]}`,
+JSON: {"items":[{"en":"...","ko":"...","note":"Korean: which meaning/structure is used","parts":"","hl":"${kind === "tense" ? "the exact verb phrase copied from en that forms the tense (e.g. \\\"I've lived\\\")" : ""}"}]}`;
+  },
 };
 
 async function callGemini(env, prompt, task) {
@@ -264,7 +296,17 @@ async function handleAI(request, env) {
     if (!(await bump(env, `ai:${day}:${ck}`, AI_PER_CODE_PER_DAY))) return json({ error: `오늘 AI 사용 한도(${AI_PER_CODE_PER_DAY}회)를 다 썼습니다` }, 429);
   }
   try {
-    const result = await callAI(env, make(body), body.task, engine);
+    let result = await callAI(env, make(body), body.task, engine);
+    if (body.task === "drill" && body.kind === "form") {
+      const n = parseInt(String(body.item).match(/\d/)?.[0] || "0", 10);
+      let good = (result.items || []).filter((it) => formOk(it, n));
+      if (good.length < 3) {   // 형식이 안 맞는 문장이 많으면 한 번 더 (Gemini 우선)
+        try { const r2 = await callAI(env, make(body) + "\nIMPORTANT: Previous answer had sentences of the wrong pattern. Every sentence must be exactly " + FORM_TAGS[n].join(" + ") + ".", "drill", "best"); good = good.concat((r2.items || []).filter((it) => formOk(it, n))); } catch {}
+      }
+      if (!good.length) throw new Error(`${n}형식에 맞는 문장을 만들지 못했어요`);
+      result = { ...result, items: good.slice(0, 6) };
+    }
+    if (body.task === "drill" && body.kind === "tense") result = { ...result, items: (result.items || []).filter((it) => it.en && it.ko && (!it.hl || it.en.toLowerCase().includes(String(it.hl).toLowerCase()))) };
     if (engine === "best" && result) result._best = true;
     if (wkey && env.STORE && result && result.ko) await env.STORE.put(wkey, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 90 });
     return json({ result });

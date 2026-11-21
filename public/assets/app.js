@@ -444,7 +444,7 @@ function quiz(box, items, opts = {}) {
         if (sim >= 95) r = { score: 100, ok: true, corrected: mine, natural: it.en, why: "정답과 거의 같아요!" };
         else {
           res.innerHTML = `<div class="result"><span class="spinner"></span> AI 코치가 확인 중…</div>`;
-          try { r = await ai("correct", { ko: it.ko, answer: it.en, mine, context: ctx ? items.slice(0, i).map((p) => `${p.sp || ""}: ${p.en}`).join("\n") : "" }); }
+          try { r = await ai("correct", { ko: it.ko, answer: it.en, mine, target: opts.target || "", context: ctx ? items.slice(0, i).map((p) => `${p.sp || ""}: ${p.en}`).join("\n") : "" }); }
           catch (e) { r = { score: sim, ok: sim >= 80, corrected: mine, natural: it.en, why: `AI 확인을 못 해서 정답과 단어 일치율(${sim}%)로만 판단했어요. 맞다고 생각되면 '맞은 걸로'를 눌러요.`, offline: true }; }
         }
       } else r = { score: 0, ok: false, corrected: "", natural: it.en, why: "정답을 소리 내어 3번 따라 말해 보세요." };
@@ -979,7 +979,8 @@ function renderTrain(v) {
     return vi >= 0 ? [segs[vi].w, segs[vi + 1] ? segs[vi + 1].w : ""].join(" ").trim() : it.en;
   };
   const extraKey = key;
-  const extra = (S.done["ai:" + extraKey] || []);
+  const FT = { 1: "S,V", 2: "S,V,C", 3: "S,V,O", 4: "S,V,IO,DO", 5: "S,V,O,OC" };
+  const extra = (S.done["ai:" + extraKey] || []).filter((it) => mode !== "form" || parseParts(it.parts).map((x) => x.tag.toUpperCase()).filter((t) => /^(S|V|O|C|IO|DO|OC)$/.test(t)).join(",") === FT[set.n]);   // 예전에 형식이 안 맞게 만들어진 AI 문장은 숨김
   const items = [...set.items, ...extra];
   const st = trainStat(key), acc = st.n ? Math.round((st.ok / st.n) * 100) : null;
   const chips = isVerb ? VERBS.map((x) => trainChip("verb:" + x.v, x.v, x.v === verbPick)).join("")
@@ -1008,7 +1009,7 @@ function renderTrain(v) {
   $("#trQuiz").onclick = () => {
     $("#trList").hidden = true;
     quiz($("#trQ"), items.map((it) => ({ ko: it.ko, en: it.en, hint })), {
-      kind: "drill", src: isVerb ? "동사 " + set.v : set.name,
+      kind: "drill", src: isVerb ? "동사 " + set.v : set.name, target: isVerb ? `the basic verb "${set.v}"` : isTense ? `${set.name} (${set.form})` : `English sentence pattern ${set.name}`,
       onEach: (_, ok) => { const t = { ...trainStat(key) }; t.n++; if (ok) t.ok++; t.at = today(); S.train[key] = t; save(); },
       onDone: () => renderTrain(v),
     });
@@ -1016,7 +1017,7 @@ function renderTrain(v) {
   $("#trMore").onclick = async () => {
     const b = $("#trMore"); b.disabled = true; b.innerHTML = '<span class="spinner"></span>';
     try {
-      const x = await ai("drill", { kind: mode, item: isVerb ? set.v : isTense ? `${set.ko} — ${set.form}` : set.name });
+      const x = await ai("drill", { kind: mode, item: isVerb ? set.v : isTense ? `${set.ko} — ${set.form}` : `${set.n}형식` });
       const add = (x.items || []).filter((i) => i.en && i.ko).map((i) => ({ en: i.en, ko: i.ko, note: i.note || "", parts: i.parts || "", hl: i.hl || "" }));
       S.done["ai:" + extraKey] = [...add, ...extra].slice(0, 30); save(); renderTrain(v); toast(`새 문장 ${add.length}개 추가`);
     } catch (e) { toast(e.message); b.disabled = false; b.textContent = "＋ AI 새 문장"; }

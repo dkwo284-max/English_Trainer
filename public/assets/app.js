@@ -489,6 +489,8 @@ function quiz(box, items, opts = {}) {
 // 4 받아쓰기 대조(Whisper) 5 내 이야기로 독백 만들기(AI) 6 매일 루틴·기록
 const MONOS = window.MONOLOGUES || [];
 const allMonos = () => [...S.monos.filter((m) => !m.del), ...MONOS];
+const monoSaved = (m) => !!(m && (m.custom || S.done["mfav:" + m.id]));
+const savedMonos = () => [...S.monos.filter((m) => !m.del), ...MONOS.filter((m) => S.done["mfav:" + m.id])];
 function todayMono() {
   const pick = S.done["mpick:" + today()];
   return allMonos().find((m) => m.id === pick) || MONOS[dayNum(today()) % Math.max(1, MONOS.length)];
@@ -660,11 +662,11 @@ function renderMono(v) {
   v.innerHTML = `
     <div class="chips" id="monoChips">
       <button class="chip" id="newMono">＋ 내 이야기로</button>
-      ${allMonos().map((x) => `<button class="chip ${x.id === m.id ? "on" : ""}" data-id="${esc(x.id)}">${S.done["mono:done:" + x.id] ? "✓ " : ""}${x.custom ? "✍ " : ""}${esc(x.title)}</button>`).join("")}
+      ${allMonos().map((x) => `<button class="chip ${x.id === m.id ? "on" : ""}" data-id="${esc(x.id)}">${monoSaved(x) ? "★ " : ""}${S.done["mono:done:" + x.id] ? "✓ " : ""}${x.custom ? "✍ " : ""}${esc(x.title)}</button>`).join("")}
     </div>
     <div class="card scn-head">
       <div class="row spread"><span class="tag">${m.custom ? "내 이야기" : esc(m.topic || "독백")}</span><span class="small muted">${m.lines.length}문장 · ${words}단어 · 약 ${secs}초</span></div>
-      <h2 style="margin-top:8px">${esc(m.title)}</h2>
+      <div class="row spread" style="margin-top:8px;gap:8px;align-items:center"><h2 style="margin:0">${esc(m.title)}</h2><button class="btn sm ${monoSaved(m) ? "primary" : ""}" id="saveMono" style="flex:none">${monoSaved(m) ? "★ 보관됨" : "☆ 보관"}</button></div>
       <p class="small muted" style="margin:4px 0 0">생각하지 말고 입으로 흘려 읽기. <b>/</b> 에서 짧게 숨 쉬고, 틀려도 멈추지 말고 끝까지.</p>
       <div class="seg" id="monoStepSeg" style="margin-top:12px">
         <button data-s="listen">① 듣기</button><button data-s="along">② 같이 읽기</button><button data-s="solo">③ 혼자 읽기</button><button data-s="erase">④ 지우기</button>
@@ -702,6 +704,11 @@ function renderMono(v) {
   const rc = $("#monoRec"); if (rc) rc.onclick = () => (monoRun ? finishRec() : runMono(m, true));
   const dn = $("#monoDone"); if (dn) dn.onclick = () => { markMonoDone(m, null); renderMono(v); };
   v.querySelectorAll("[data-unweak]").forEach((b) => (b.onclick = () => { delete S.monoWeak[b.dataset.unweak]; save(); renderMono(v); }));
+  $("#saveMono").onclick = () => {
+    if (m.custom) { toast("내 이야기 독백은 이미 보관돼 있어요 (복습 › 독백)"); return; }
+    S.done["mfav:" + m.id] = !S.done["mfav:" + m.id]; save();
+    toast(S.done["mfav:" + m.id] ? "보관했어요 ★ 복습 › 독백에서 볼 수 있어요" : "보관을 해제했어요"); renderMono(v);
+  };
   if (monoLast && monoLast.mono === m.id) showMonoResult(m);
   renderRecs(m);
 }
@@ -1428,7 +1435,7 @@ function renderVault(v) {
   const q = norm(vaultQ);
   const f = (arr, keys) => !q ? arr : arr.filter((x) => keys.some((k) => norm(x[k]).includes(q) || String(x[k] || "").includes(vaultQ)));
   v.innerHTML = `
-    <div class="seg scroll" id="vSeg"><button data-m="due">복습 ${due.length ? `(${due.length})` : ""}</button><button data-m="saved">저장 문장</button><button data-m="expr">표현</button><button data-m="speakrec">발음</button><button data-m="scn">시나리오</button><button data-m="words">단어</button></div>
+    <div class="seg scroll" id="vSeg"><button data-m="due">복습 ${due.length ? `(${due.length})` : ""}</button><button data-m="saved">저장 문장</button><button data-m="expr">표현</button><button data-m="speakrec">발음</button><button data-m="scn">시나리오</button><button data-m="mono">독백</button><button data-m="words">단어</button></div>
     ${vaultMode !== "due" && vaultMode !== "speakrec" ? `<input class="text" id="vSearch" placeholder="검색" value="${esc(vaultQ)}" style="margin:4px 0 8px">` : ""}
     <div id="vBody"></div>`;
   [...$("#vSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.m === vaultMode));
@@ -1491,6 +1498,28 @@ function renderVault(v) {
       if (c) { const s = scns.find((x) => x.id === c.dataset.copy); const txt = s.title + "\n\n" + s.lines.map((l) => `${l.sp}: ${l.en}\n   ${l.ko}`).join("\n"); navigator.clipboard?.writeText(txt).then(() => toast("복사했어요"), () => toast("복사 실패")); }
       if (d && confirm("이 시나리오를 삭제할까요?")) { S.scenarios = S.scenarios.filter((x) => x.id !== d.dataset.delc); save(); renderVault(v); }
       if (u) { S.done["fav:" + u.dataset.unfav] = false; save(); renderVault(v); }
+    };
+  } else if (vaultMode === "mono") {
+    const monos = savedMonos(), list = f(monos, ["title", "cue", "topic"]);
+    const recs = (id) => S.monoLog.filter((x) => x.m === id), best = (id) => Math.max(0, ...recs(id).map((x) => x.acc || 0));
+    body.innerHTML = list.length ? `<div class="card">${list.map((m) => `<div class="item"><div class="row spread"><b>${esc(m.title)}</b><span class="tag">${m.custom ? "내 이야기" : esc(m.topic || "필수")}</span></div>
+        <div class="small muted">${esc(m.cue || "")}</div>
+        <div class="small muted">${m.lines.length}문장${m.at ? " · " + esc(m.at.slice(0, 10)) : ""}${recs(m.id).length ? ` · 낭독 ${recs(m.id).length}회${best(m.id) ? ` · 최고 완독 ${best(m.id)}%` : ""}` : ""}</div>
+        <div class="acts"><button class="act" data-mopen="${esc(m.id)}">열기</button><button class="act" data-msay="${esc(m.id)}">🔊 듣기</button><button class="act" data-mcopy="${esc(m.id)}">전체 문장 복사</button>${m.custom ? `<button class="act" data-mdel="${esc(m.id)}">삭제</button>` : `<button class="act" data-munfav="${esc(m.id)}">보관 해제</button>`}</div></div>`).join("")}</div>`
+      : `<div class="card empty">독백 화면에서 '☆ 독백 보관'을 누르거나 '＋ 내 이야기로'로 만든 독백이 여기에 보관돼요.</div>`;
+    let playingM = false;
+    body.onclick = async (e) => {
+      const o = e.target.closest("[data-mopen]"), c = e.target.closest("[data-mcopy]"), d = e.target.closest("[data-mdel]"), u = e.target.closest("[data-munfav]"), sy = e.target.closest("[data-msay]");
+      if (o) { S.done["mpick:" + today()] = o.dataset.mopen; monoLast = null; save(); go("mono"); }
+      if (c) { const m = monos.find((x) => x.id === c.dataset.mcopy); const txt = m.title + "\n\n" + m.lines.map((l) => `${monoText(l.en)}\n   ${l.ko}`).join("\n"); navigator.clipboard?.writeText(txt).then(() => toast("복사했어요"), () => toast("복사 실패")); }
+      if (d && confirm("이 독백을 삭제할까요? (녹음은 기기에 남아요)")) { S.monos = S.monos.filter((x) => x.id !== d.dataset.mdel); save(); renderVault(v); }
+      if (u) { S.done["mfav:" + u.dataset.munfav] = false; save(); renderVault(v); }
+      if (sy) {
+        if (playingM) { playingM = false; window.speechSynthesis?.cancel(); sy.textContent = "🔊 듣기"; return; }
+        const m = monos.find((x) => x.id === sy.dataset.msay); playingM = true; sy.textContent = "■ 멈춤";
+        for (const l of m.lines) { if (!playingM) break; await speak(monoText(l.en)); await sleep(250); }
+        playingM = false; sy.textContent = "🔊 듣기";
+      }
     };
   } else {
     const list = f(S.words, ["w", "ko"]);

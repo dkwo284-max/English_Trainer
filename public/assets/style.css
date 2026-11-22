@@ -271,3 +271,4 @@ html, body { overflow-x: hidden; }
 .mdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
 @media (max-width: 380px) { .tabbar button span { font-size: 11px; } }
 #monoStepSeg button { white-space: nowrap; font-size: 13px; padding: 8px 2px; }
+.macts { margin-top: 6px; }

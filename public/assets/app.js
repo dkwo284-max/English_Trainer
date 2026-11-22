@@ -679,7 +679,8 @@ function renderMono(v) {
     <div class="card mono-text" id="monoText">${monoStep === "erase" && monoRound === "cue"
       ? `<div class="mcue">${esc(m.cue || m.lines.map((l) => l.ko).join(" "))}</div>${monoKo ? `<div class="small muted" style="margin-top:8px">${m.lines.map((l) => esc(l.ko)).join("<br>")}</div>` : ""}`
       : m.lines.map((ln, li) => `<div class="mline" data-li="${li}"><p class="en">${chunksOf(ln.en).map((c, ci) => `<span class="mch" data-k="${li}-${ci}">${maskChunk(c, monoStep === "erase" ? monoRound : "full")}</span>`).join('<i class="mslash">/</i>')}</p>
-        ${monoKo ? `<div class="ko">${esc(ln.ko)}</div>` : ""}${!solo && ln.tip ? `<div class="tip">${esc(ln.tip)}</div>` : ""}</div>`).join("")}</div>
+        ${monoKo ? `<div class="ko">${esc(ln.ko)}</div>` : ""}${!solo && ln.tip ? `<div class="tip">${esc(ln.tip)}</div>` : ""}
+        <div class="acts macts">${sayBtns(monoText(ln.en))}${starBtn({ en: monoText(ln.en), ko: ln.ko, src: m.title })}</div></div>`).join("")}</div>
     <div class="card" id="monoResult" ${monoLast && monoLast.mono === m.id ? "" : "hidden"}></div>
     <div class="sticky-actions">
       ${solo ? `<button class="btn" id="monoGo">${monoStep === "erase" && monoRound === "cue" ? "⏱ 타이머만" : "▶ 녹음 없이"}</button><button class="btn primary" id="monoRec">🎙 녹음하며 시작</button>`

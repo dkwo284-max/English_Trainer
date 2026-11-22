@@ -23,14 +23,14 @@ function toast(msg, ms = 2200) {
 // ── 상태 & 동기화 ───────────────────────────────────────
 let CODE = "";
 let S = null;
-const blank = () => ({ v: 1, rev: 0, created: today(), saved: [], scenarios: [], wrong: [], words: [], history: {}, done: {}, expr: {}, speak: {}, train: {}, errors: [], settings: { accent: "en-US", rate: 0.95, showKo: true } });
+const blank = () => ({ v: 1, rev: 0, created: today(), saved: [], scenarios: [], wrong: [], words: [], history: {}, done: {}, expr: {}, speak: {}, train: {}, errors: [], monos: [], monoLog: [], monoWeak: {}, settings: { accent: "en-US", rate: 0.95, showKo: true } });
 
 function fix(s) {
   const b = blank();
   s = Object.assign(b, s || {});
   s.settings = Object.assign(blank().settings, s.settings || {});
-  for (const k of ["saved", "scenarios", "wrong", "words", "errors"]) if (!Array.isArray(s[k])) s[k] = [];
-  for (const k of ["expr", "speak", "train"]) if (!s[k] || typeof s[k] !== "object" || Array.isArray(s[k])) s[k] = {};
+  for (const k of ["saved", "scenarios", "wrong", "words", "errors", "monos", "monoLog"]) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ["expr", "speak", "train", "monoWeak"]) if (!s[k] || typeof s[k] !== "object" || Array.isArray(s[k])) s[k] = {};
   return s;
 }
 
@@ -46,7 +46,7 @@ async function api(path, opt = {}) {
 function mergeStates(a, b) {
   // 두 기기에서 동시에 바꾼 경우: 목록은 id 기준 합치고(최근 것 우선), 날짜별 기록은 큰 값
   const out = fix(JSON.parse(JSON.stringify(b)));
-  for (const k of ["saved", "scenarios", "wrong", "words"]) {
+  for (const k of ["saved", "scenarios", "wrong", "words", "monos"]) {
     const m = new Map();
     for (const x of [...(b[k] || []), ...(a[k] || [])]) {
       const id = x.id || x.w;
@@ -67,6 +67,10 @@ function mergeStates(a, b) {
   const eid = new Set(out.errors.map((e) => e.id));
   for (const e of a.errors || []) if (!eid.has(e.id)) out.errors.push(e);
   out.errors = out.errors.sort((x, y) => (y.at || "").localeCompare(x.at || "")).slice(0, 300);
+  const lid = new Set(out.monoLog.map((e) => e.id));
+  for (const e of a.monoLog || []) if (!lid.has(e.id)) out.monoLog.push(e);
+  out.monoLog = out.monoLog.sort((x, y) => (y.at || "").localeCompare(x.at || "")).slice(0, 300);
+  for (const [k, v] of Object.entries(a.monoWeak || {})) { const c = out.monoWeak[k]; if (!c || (v.n || 0) > (c.n || 0)) out.monoWeak[k] = v; }
   return out;
 }
 
@@ -480,8 +484,394 @@ function quiz(box, items, opts = {}) {
   step();
 }
 
+// ── 독백 낭독 ───────────────────────────────────────────
+// 1 낭독(듣기·같이 읽기·혼자 읽기, 노래방 하이라이트) 2 점점 지우기 3 녹음·원어민 비교(기기 저장)
+// 4 받아쓰기 대조(Whisper) 5 내 이야기로 독백 만들기(AI) 6 매일 루틴·기록
+const MONOS = window.MONOLOGUES || [];
+const allMonos = () => [...S.monos.filter((m) => !m.del), ...MONOS];
+function todayMono() {
+  const pick = S.done["mpick:" + today()];
+  return allMonos().find((m) => m.id === pick) || MONOS[dayNum(today()) % Math.max(1, MONOS.length)];
+}
+const monoText = (en) => String(en || "").replace(/\s*\/\s*/g, " ").trim();
+const chunksOf = (en) => String(en || "").split(/\s*\/\s*/).map((c) => c.trim()).filter(Boolean);
+const STOP = new Set("a an the and or but so to of in on at for with from by up out is am are was were be been it its it's i i'm i've i'd i'll me my we we're we've our you you're your he she they them their this that there these those just really very do did does don't didn't can can't will would could should have has had not no yes as if about like then than too also all some any".split(" "));
+const MONO_ROUNDS = [["full", "1 전체"], ["key", "2 핵심 단어"], ["first", "3 첫 단어"], ["cue", "4 줄거리만"]];
+let monoStep = "listen", monoRound = "full", monoRate = 1, monoKo = true, monoRun = null, monoLast = null;
+
+// 점점 지우기: 단어를 밑줄 칸으로
+function blankWord(w) { return `<span class="mblank" style="width:${Math.min(w.length, 9) * 0.62 + 0.4}em"></span>`; }
+function maskChunk(c, round) {
+  if (round === "full") return wrapWords(c);
+  const words = c.split(/\s+/);
+  return words.map((w, i) => {
+    const bare = norm(w);
+    if (round === "key") return !bare || STOP.has(bare) || bare.length < 4 ? blankWord(w) : esc(w);
+    return i === 0 ? esc(w) : blankWord(w);   // first
+  }).join(" ");
+}
+
+// 문장 단위로 읽어 주면서 끊어 읽기 덩어리를 하이라이트 (boundary 이벤트가 없으면 시간으로 추정)
+function speakChunks(en, rate, onChunk) {
+  const parts = chunksOf(en), text = parts.join(" ");
+  const starts = []; let pos = 0; for (const p of parts) { starts.push(pos); pos += p.length + 1; }
+  return new Promise((res) => {
+    if (!window.speechSynthesis) { toast("이 브라우저는 음성 재생을 지원하지 않아요"); return res(); }
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = S.settings.accent; u.rate = (S.settings.rate || 0.95) * rate;
+    const v = pickVoice(u.lang); if (v) u.voice = v;
+    let got = false, cur = -1, timers = [];
+    const set = (k) => { if (k !== cur) { cur = k; onChunk(k); } };
+    u.onboundary = (e) => { got = true; timers.forEach(clearTimeout); let k = 0; while (k + 1 < starts.length && e.charIndex >= starts[k + 1]) k++; set(k); };
+    u.onstart = () => {
+      set(0);
+      // 추정 타이밍(단어당 약 0.4초/속도) — boundary 가 오면 취소됨
+      let t = 0;
+      parts.forEach((p, k) => { if (k) timers.push(setTimeout(() => { if (!got) set(k); }, t)); t += (p.split(/\s+/).length * 400) / u.rate + 180; });
+    };
+    u.onend = u.onerror = () => { timers.forEach(clearTimeout); res(); };
+    speechSynthesis.speak(u);
+  });
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── 녹음 (기기 안 IndexedDB 에만 저장) ──
+const recDB = (() => {
+  let p = null;
+  const open = () => p || (p = new Promise((res, rej) => {
+    if (!window.indexedDB) return rej(new Error("no idb"));
+    const r = indexedDB.open("et-rec", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("recs", { keyPath: "id" });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const tx = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction("recs", mode), st = t.objectStore("recs"); const out = fn(st); t.oncomplete = () => res(out && out.result !== undefined ? out.result : out); t.onerror = () => rej(t.error); }); };
+  return {
+    put: (rec) => tx("readwrite", (st) => st.put(rec)).catch(() => null),
+    all: () => tx("readonly", (st) => st.getAll()).then((a) => (a || []).filter((x) => x.code === CODE)).catch(() => []),
+    del: (id) => tx("readwrite", (st) => st.delete(id)).catch(() => null),
+  };
+})();
+async function startRecorder() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error("이 브라우저는 녹음을 지원하지 않아요 (Chrome·Safari 최신 버전 권장)");
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch { throw new Error("마이크 권한을 허용해 주세요"); }
+  const rec = new MediaRecorder(stream), parts = [], t0 = Date.now();
+  rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
+  rec.start(250);
+  return {
+    stop: () => new Promise((res) => {
+      rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); res({ blob: new Blob(parts, { type: rec.mimeType || "audio/webm" }), dur: (Date.now() - t0) / 1000 }); };
+      if (rec.state !== "inactive") rec.stop(); else rec.onstop();
+    }),
+  };
+}
+// 받아쓰기용: 16kHz 모노 WAV 로 변환
+async function toWav16k(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
+  const ab = await blob.arrayBuffer();
+  const buf = await new Promise((res, rej) => { const p = ac.decodeAudioData(ab, res, rej); if (p && p.then) p.then(res, rej); });
+  ac.close?.();
+  const len = Math.ceil(buf.duration * 16000), off = new OfflineAudioContext(1, len, 16000), src = off.createBufferSource();
+  src.buffer = buf; src.connect(off.destination); src.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+  const out = new DataView(new ArrayBuffer(44 + pcm.length * 2)), ws = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, "RIFF"); out.setUint32(4, 36 + pcm.length * 2, true); ws(8, "WAVE"); ws(12, "fmt "); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+  out.setUint32(24, 16000, true); out.setUint32(28, 32000, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); ws(36, "data"); out.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) { const v = Math.max(-1, Math.min(1, pcm[i])); out.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+  return new Blob([out], { type: "audio/wav" });
+}
+async function transcribe(blob) {
+  const wav = await toWav16k(blob);
+  const r = await fetch("/api/stt", { method: "POST", headers: { "content-type": "audio/wav", "x-code": CODE }, body: wav });
+  let d = {}; try { d = await r.json(); } catch {}
+  if (!r.ok) throw new Error(d.error || "받아쓰기 실패");
+  return d;
+}
+
+// ── 원문 대조: 단어 정렬(LCS) ──
+const ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" ");
+const TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split(" ");
+function numWords(n) {
+  n = +n; if (!(n >= 0 && n < 1000)) return [String(n)];
+  if (n < 20) return [ONES[n]];
+  if (n < 100) return n % 10 ? [TENS[Math.floor(n / 10)], ONES[n % 10]] : [TENS[n / 10]];
+  return [ONES[Math.floor(n / 100)], "hundred", ...(n % 100 ? numWords(n % 100) : [])];
+}
+const toks = (s) => norm(String(s).replace(/[-–—]/g, " ")).split(" ").filter(Boolean).flatMap((w) => (/^\d+$/.test(w) ? numWords(w) : [w]));
+function editOk(a, b) {
+  if (a === b) return true;
+  if (a.replace(/'/g, "") === b.replace(/'/g, "")) return true;
+  if (Math.min(a.length, b.length) < 5 || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, ed = 0;
+  while (i < a.length && j < b.length) { if (a[i] === b[j]) { i++; j++; continue; } if (++ed > 1) return false; if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; } }
+  return ed + (a.length - i) + (b.length - j) <= 1;
+}
+function alignMono(m, hypText) {
+  const ref = []; m.lines.forEach((ln, li) => { for (const w of monoText(ln.en).split(/\s+/)) { const t = toks(w); t.forEach((x, k) => ref.push({ li, w: k === 0 ? w : "", t: x })); } });
+  const hyp = toks(hypText), n = ref.length, M = hyp.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(M + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = M - 1; j >= 0; j--) L[i][j] = editOk(ref[i].t, hyp[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  let i = 0, j = 0; while (i < n && j < M) { if (editOk(ref[i].t, hyp[j]) && L[i][j] === L[i + 1][j + 1] + 1) { ref[i].ok = true; i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++; }
+  return { ref, hypN: hyp.length, matched: ref.filter((r) => r.ok).length };
+}
+
+// ── 기록 ──
+function monoStreak() {
+  let n = 0, d = today(); const any = (x) => (S.history[x]?.mono || 0) > 0;
+  if (!any(d)) d = addDays(d, -1);
+  while (any(d)) { n++; d = addDays(d, -1); }
+  return n;
+}
+function monoStatsHtml() {
+  const L = S.monoLog.filter((x) => x.wpm).slice(0, 20).reverse();
+  const n = S.monoLog.length, mins = Math.round(S.monoLog.reduce((a, x) => a + (x.dur || 0), 0) / 60);
+  let spark = `<p class="small muted" style="margin:8px 0 0">🎙 녹음하며 읽고 받아쓰기 채점을 하면 말하기 속도(분당 단어 수)와 완독률 그래프가 생겨요.</p>`;
+  if (L.length >= 1) {
+    const W = 300, H = 70, mx = Math.max(160, ...L.map((x) => x.wpm)), mn = 0;
+    const px = (k) => (L.length === 1 ? W / 2 : (k / (L.length - 1)) * (W - 16) + 8), py = (v) => H - 6 - ((v - mn) / (mx - mn)) * (H - 14);
+    const line = (f, c) => `<polyline fill="none" stroke="${c}" stroke-width="2" points="${L.map((x, k) => `${px(k).toFixed(1)},${py(f(x)).toFixed(1)}`).join(" ")}"/>` + L.map((x, k) => `<circle cx="${px(k).toFixed(1)}" cy="${py(f(x)).toFixed(1)}" r="2.6" fill="${c}"/>`).join("");
+    const avg = (f, arr) => Math.round(arr.reduce((a, x) => a + f(x), 0) / arr.length);
+    const first = L.slice(0, Math.min(3, L.length)), last = L.slice(-Math.min(3, L.length));
+    spark = `<svg viewBox="0 0 ${W} ${H}" class="mspark" role="img" aria-label="말하기 속도·완독률 추이">
+        <line x1="0" x2="${W}" y1="${py(130)}" y2="${py(130)}" class="mgoal"/><text x="${W - 4}" y="${py(130) - 3}" text-anchor="end" class="mgoal-t">원어민 보통 130</text>
+        ${line((x) => x.wpm, "var(--accent)")}${line((x) => (x.acc || 0) * 1.6, "var(--warn)")}</svg>
+      <div class="row small muted" style="gap:12px"><span><i class="mdot" style="background:var(--accent)"></i>분당 단어 수</span><span><i class="mdot" style="background:var(--warn)"></i>완독률</span>
+      <span style="margin-left:auto">처음 ${avg((x) => x.wpm, first)} → 최근 <b style="color:var(--text)">${avg((x) => x.wpm, last)}</b> wpm · 완독 ${avg((x) => x.acc || 0, last)}%</span></div>`;
+  }
+  return `<div class="stats" style="margin-top:6px"><div class="stat"><b>🔥 ${monoStreak()}</b><span>독백 연속일</span></div><div class="stat"><b>${n}</b><span>낭독 횟수</span></div><div class="stat"><b>${mins}분</b><span>소리 내 읽은 시간</span></div></div>${spark}`;
+}
+function weakWordsHtml() {
+  const top = Object.entries(S.monoWeak).filter(([, x]) => x.n >= 1).sort((a, b) => b[1].n - a[1].n || (b[1].at || "").localeCompare(a[1].at || "")).slice(0, 14);
+  if (!top.length) return `<p class="small muted" style="margin:6px 0 0">받아쓰기 채점에서 자주 놓친 단어가 여기에 모여요. 눌러서 발음을 듣고, ▶로 실제 영상 예문을 보세요.</p>`;
+  return `<div class="chips wrap" style="margin-top:8px">${top.map(([w, x]) => `<span class="chip wk-chip"><button class="lnk" data-say="${esc(w)}">🔊 ${esc(w)}</button><small>${x.n}회</small>${ygUrl(w) ? `<a class="lnk" href="${esc(ygUrl(w))}" target="_blank" rel="noopener" title="실제 영상 예문">▶</a>` : ""}<button class="lnk x" data-unweak="${esc(w)}" aria-label="목록에서 빼기">✕</button></span>`).join("")}</div>
+    <p class="small muted" style="margin:6px 0 0">3번 이상 놓친 단어는 문장 째로 다시 읽어 보세요. 다 익혔으면 ✕로 빼면 돼요.</p>`;
+}
+
+// ── 화면 ──
+function renderMono(v) {
+  const m = todayMono();
+  if (!m) { v.innerHTML = `<div class="card">독백 자료를 불러오지 못했어요.</div>`; return; }
+  const words = m.lines.reduce((a, ln) => a + monoText(ln.en).split(/\s+/).length, 0);
+  const secs = Math.round((words / 130) * 60 / monoRate);
+  const doneToday = (todayH().mono || 0) > 0;
+  const solo = monoStep === "solo" || monoStep === "erase";
+  v.innerHTML = `
+    <div class="chips" id="monoChips">
+      <button class="chip" id="newMono">＋ 내 이야기로</button>
+      ${allMonos().map((x) => `<button class="chip ${x.id === m.id ? "on" : ""}" data-id="${esc(x.id)}">${S.done["mono:done:" + x.id] ? "✓ " : ""}${x.custom ? "✍ " : ""}${esc(x.title)}</button>`).join("")}
+    </div>
+    <div class="card scn-head">
+      <div class="row spread"><span class="tag">${m.custom ? "내 이야기" : esc(m.topic || "독백")}</span><span class="small muted">${m.lines.length}문장 · ${words}단어 · 약 ${secs}초</span></div>
+      <h2 style="margin-top:8px">${esc(m.title)}</h2>
+      <p class="small muted" style="margin:4px 0 0">생각하지 말고 입으로 흘려 읽기. <b>/</b> 에서 짧게 숨 쉬고, 틀려도 멈추지 말고 끝까지.</p>
+      <div class="seg" id="monoStepSeg" style="margin-top:12px">
+        <button data-s="listen">① 듣기</button><button data-s="along">② 같이 읽기</button><button data-s="solo">③ 혼자 읽기</button><button data-s="erase">④ 지우기</button>
+      </div>
+      ${monoStep === "erase" ? `<div class="seg" id="monoRoundSeg">${MONO_ROUNDS.map(([k, l]) => `<button data-r="${k}" class="${monoRound === k ? "on" : ""}">${l}</button>`).join("")}</div>` : ""}
+      <div class="row small" style="gap:8px;margin-top:2px"><span class="muted">속도</span><div class="seg" id="monoRateSeg" style="flex:1;margin:4px 0">${[[0.8, "0.8×"], [1, "1.0×"], [1.1, "1.1×"]].map(([r, l]) => `<button data-v="${r}" class="${monoRate === r ? "on" : ""}">${l}</button>`).join("")}</div>
+        <label class="small muted" style="white-space:nowrap"><input type="checkbox" id="monoKo" ${monoKo ? "checked" : ""}> 한국어</label></div>
+      <p class="small muted" style="margin:4px 0 0">${({ listen: "원어민 음성을 들으며 끊어 읽는 곳(하이라이트)만 눈으로 따라가세요.", along: "음성과 동시에 소리 내서 같이 읽어요(섀도잉). 음성보다 반 박자 늦어도 괜찮아요.", solo: "음성 없이 하이라이트 속도에 맞춰 혼자 읽어요. 🎙 녹음하면 원어민과 비교하고 채점할 수 있어요.", erase: monoRound === "cue" ? "줄거리만 보고 내 말로 독백해 보세요. 녹음 후 채점하면 원문을 얼마나 살려 말했는지 보여요." : "글자를 조금씩 지웠어요. 빈칸은 기억해서 채워 말하세요. 1→4 단계로 갈수록 내 말이 돼요." })[monoStep]}</p>
+    </div>
+    <div class="card mono-text" id="monoText">${monoStep === "erase" && monoRound === "cue"
+      ? `<div class="mcue">${esc(m.cue || m.lines.map((l) => l.ko).join(" "))}</div>${monoKo ? `<div class="small muted" style="margin-top:8px">${m.lines.map((l) => esc(l.ko)).join("<br>")}</div>` : ""}`
+      : m.lines.map((ln, li) => `<div class="mline" data-li="${li}"><p class="en">${chunksOf(ln.en).map((c, ci) => `<span class="mch" data-k="${li}-${ci}">${maskChunk(c, monoStep === "erase" ? monoRound : "full")}</span>`).join('<i class="mslash">/</i>')}</p>
+        ${monoKo ? `<div class="ko">${esc(ln.ko)}</div>` : ""}${!solo && ln.tip ? `<div class="tip">${esc(ln.tip)}</div>` : ""}</div>`).join("")}</div>
+    <div class="card" id="monoResult" ${monoLast && monoLast.mono === m.id ? "" : "hidden"}></div>
+    <div class="sticky-actions">
+      ${solo ? `<button class="btn" id="monoGo">${monoStep === "erase" && monoRound === "cue" ? "⏱ 타이머만" : "▶ 녹음 없이"}</button><button class="btn primary" id="monoRec">🎙 녹음하며 시작</button>`
+        : `<button class="btn primary" id="monoGo">▶ ${monoStep === "listen" ? "듣기" : "같이 읽기"} 시작</button><button class="btn" id="monoDone">${doneToday ? "✓ 오늘 완료" : "완료 기록"}</button>`}
+    </div>
+    <div class="card"><div class="row spread"><h3>내 녹음</h3><span class="small muted">이 기기에만 저장</span></div><div id="monoRecs"><span class="spinner"></span></div></div>
+    <div class="card"><h3>자주 놓친 단어</h3>${weakWordsHtml()}</div>
+    <div class="card"><div class="row spread"><h3>낭독 기록</h3><span class="small muted">매일 1개 · 30~60초</span></div>${monoStatsHtml()}</div>`;
+
+  const seg = (id, attr, fn) => { const el = $(id); if (!el) return; [...el.children].forEach((b) => b.dataset[attr] !== undefined && b.classList.toggle("on", String(b.dataset[attr]) === String(fn.cur()))); el.onclick = (e) => { const b = e.target.closest("button"); if (b) { stopMono(); fn.set(b.dataset[attr]); renderMono(v); } }; };
+  seg("#monoStepSeg", "s", { cur: () => monoStep, set: (x) => (monoStep = x) });
+  seg("#monoRoundSeg", "r", { cur: () => monoRound, set: (x) => (monoRound = x) });
+  seg("#monoRateSeg", "v", { cur: () => monoRate, set: (x) => (monoRate = +x) });
+  $("#monoKo").onchange = (e) => { monoKo = e.target.checked; renderMono(v); };
+  $("#monoChips").onclick = (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    stopMono();
+    if (b.id === "newMono") return newMonoSheet();
+    S.done["mpick:" + today()] = b.dataset.id; save(); monoLast = null; renderMono(v);
+  };
+  const go = $("#monoGo"); if (go) go.onclick = () => (monoRun ? stopMono() : runMono(m, false));
+  const rc = $("#monoRec"); if (rc) rc.onclick = () => (monoRun ? finishRec() : runMono(m, true));
+  const dn = $("#monoDone"); if (dn) dn.onclick = () => { markMonoDone(m, null); renderMono(v); };
+  v.querySelectorAll("[data-unweak]").forEach((b) => (b.onclick = () => { delete S.monoWeak[b.dataset.unweak]; save(); renderMono(v); }));
+  if (monoLast && monoLast.mono === m.id) showMonoResult(m);
+  renderRecs(m);
+}
+
+function markMonoDone(m, sess) {
+  if (!S.done["mono:" + today() + ":" + m.id]) { S.done["mono:" + today() + ":" + m.id] = true; log("mono"); }
+  S.done["mono:done:" + m.id] = true;
+  if (sess) { S.monoLog.unshift(sess); S.monoLog = S.monoLog.slice(0, 300); }
+  save();
+}
+
+function hl(key) {
+  document.querySelectorAll("#monoText .mch.now").forEach((x) => x.classList.remove("now"));
+  if (!key) return;
+  const el = document.querySelector(`#monoText .mch[data-k="${key}"]`);
+  if (el) { el.classList.add("now"); el.classList.add("past"); const line = el.closest(".mline"); if (line && !isVisible(line)) line.scrollIntoView({ block: "center", behavior: "smooth" }); }
+}
+const isVisible = (el) => { const r = el.getBoundingClientRect(); return r.top > 60 && r.bottom < innerHeight - 140; };
+
+function stopMono() {
+  if (!monoRun) return;
+  monoRun.stop = true; window.speechSynthesis?.cancel();
+  if (monoRun.rec && !monoRun.finishing) { monoRun.rec.stop(); }   // 녹음은 버림
+  monoRun = null; hl(null);
+  const go = $("#monoGo"); if (go) go.textContent = go.textContent.replace("■ 멈춤", "▶ 다시");
+}
+
+async function runMono(m, withRec) {
+  const run = (monoRun = { stop: false, rec: null });
+  document.querySelectorAll("#monoText .mch").forEach((x) => x.classList.remove("past"));
+  const go = $("#monoGo"), rc = $("#monoRec");
+  if (withRec) {
+    try { run.rec = await startRecorder(); } catch (e) { toast(e.message, 3500); monoRun = null; return; }
+    if (rc) rc.textContent = "■ 다 읽었어요"; if (go) go.disabled = true;
+    toast("녹음 중 — 끝까지 읽고 '다 읽었어요'를 누르세요");
+  } else if (go) go.textContent = "■ 멈춤";
+  const cueOnly = monoStep === "erase" && monoRound === "cue";
+  if (monoStep === "listen" || monoStep === "along") {
+    for (let li = 0; li < m.lines.length && !run.stop; li++) {
+      await speakChunks(m.lines[li].en, monoRate, (ci) => !run.stop && hl(li + "-" + ci));
+      if (!run.stop) await sleep(monoStep === "along" ? 650 : 400);
+    }
+    if (!run.stop) { hl(null); monoRun = null; if (go) go.textContent = "▶ 다시"; if (monoStep === "along") { markMonoDone(m, { id: uid(), at: new Date().toISOString(), d: today(), m: m.id, t: m.title, mode: "along", dur: 0 }); toast("같이 읽기 완료! 이제 ③ 혼자 읽기로 넘어가 보세요"); } }
+    return;
+  }
+  if (cueOnly) { if (!withRec) { toast("줄거리를 보며 말해 보세요. 다 했으면 ■ 멈춤"); } return; }
+  // 혼자 읽기·지우기: 음성 없이 하이라이트로 속도 안내 (원어민 보통 130 wpm 기준)
+  const wps = (130 / 60) * monoRate;
+  for (let li = 0; li < m.lines.length && !run.stop; li++) {
+    const cs = chunksOf(m.lines[li].en);
+    for (let ci = 0; ci < cs.length && !run.stop; ci++) { hl(li + "-" + ci); await sleep((cs[ci].split(/\s+/).length / wps) * 1000 + 220); }
+    await sleep(450);
+  }
+  if (run.stop) return;
+  hl(null);
+  if (!withRec) { monoRun = null; if (go) go.textContent = "▶ 다시"; markMonoDone(m, { id: uid(), at: new Date().toISOString(), d: today(), m: m.id, t: m.title, mode: monoStep + (monoStep === "erase" ? ":" + monoRound : ""), dur: 0 }); toast("끝까지 읽었어요 👏 다음엔 🎙 녹음하며 해 보세요"); }
+  else toast("다 읽었으면 '■ 다 읽었어요'를 누르세요");
+}
+
+async function finishRec() {
+  const run = monoRun; if (!run || !run.rec) return stopMono();
+  run.finishing = true; run.stop = true; monoRun = null; hl(null);
+  const m = todayMono(), { blob, dur } = await run.rec.stop();
+  const rc = $("#monoRec"), go = $("#monoGo"); if (rc) rc.textContent = "🎙 다시 녹음"; if (go) go.disabled = false;
+  if (dur < 3) return toast("녹음이 너무 짧아요");
+  const id = uid(), mode = monoStep + (monoStep === "erase" ? ":" + monoRound : "");
+  const rec = { id, code: CODE, mono: m.id, title: m.title, at: new Date().toISOString(), d: today(), dur: Math.round(dur), mode, blob };
+  await recDB.put(rec);
+  monoLast = { mono: m.id, recId: id, dur, mode, url: URL.createObjectURL(blob), status: "stt" };
+  showMonoResult(m); renderRecs(m);
+  try {
+    const t = await transcribe(blob);
+    const al = alignMono(m, t.text);
+    const acc = Math.round((al.matched / Math.max(1, al.ref.length)) * 100), wpm = Math.round(al.hypN / (dur / 60));
+    Object.assign(monoLast, { status: "done", text: t.text, al, acc, wpm });
+    // 놓친 단어 기록 (짧은 기능어 제외) — 문장 일부까지 같이 기억해 영상 예문 검색에 사용
+    const missed = al.ref.filter((r) => !r.ok && r.t.length >= 3 && !STOP.has(r.t));
+    const now = new Date().toISOString();
+    for (const r of missed.slice(0, 20)) { const x = S.monoWeak[r.t] || (S.monoWeak[r.t] = { n: 0 }); x.n++; x.at = now; x.m = m.id; }
+    for (const r of al.ref) if (r.ok && S.monoWeak[r.t]) { S.monoWeak[r.t].hit = (S.monoWeak[r.t].hit || 0) + 1; }
+    const keys = Object.keys(S.monoWeak); if (keys.length > 120) keys.sort((a, b) => (S.monoWeak[a].at || "").localeCompare(S.monoWeak[b].at || "")).slice(0, keys.length - 120).forEach((k) => delete S.monoWeak[k]);
+    rec.acc = acc; rec.wpm = wpm; await recDB.put(rec);
+    markMonoDone(m, { id, at: now, d: today(), m: m.id, t: m.title, mode, dur: Math.round(dur), wpm, acc });
+  } catch (e) {
+    Object.assign(monoLast, { status: "err", err: e.message });
+    markMonoDone(m, { id, at: new Date().toISOString(), d: today(), m: m.id, t: m.title, mode, dur: Math.round(dur) });
+  }
+  if (TAB === "mono") renderMono($("#view"));
+}
+
+function showMonoResult(m) {
+  const box = $("#monoResult"); if (!box || !monoLast) return; box.hidden = false;
+  const r = monoLast;
+  let body = "";
+  if (r.status === "stt") body = `<p class="small muted"><span class="spinner"></span> 받아쓰기로 채점하는 중… (10초 안팎)</p>`;
+  else if (r.status === "err") body = `<p class="small" style="color:var(--bad)">채점 실패: ${esc(r.err)}</p><p class="small muted">녹음은 저장됐어요. 아래에서 원어민과 번갈아 들어 보세요.</p>`;
+  else {
+    const byLine = m.lines.map((_, li) => r.al.ref.filter((x) => x.li === li));
+    body = `<div class="stats" style="margin:8px 0"><div class="stat"><b>${r.acc}%</b><span>완독률</span></div><div class="stat"><b>${r.wpm}</b><span>분당 단어</span></div><div class="stat"><b>${Math.round(r.dur)}초</b><span>걸린 시간</span></div></div>
+      <p class="small muted" style="margin:0 0 6px">${r.acc >= 90 ? "아주 좋아요! 거의 다 또렷하게 들렸어요 👏" : r.acc >= 70 ? "좋아요. 빨간 단어만 따로 몇 번 소리 내 보세요." : "빨간 단어가 잘 안 들렸어요. ② 같이 읽기로 한 번 더 듣고 다시 해 보세요."} ${r.wpm < 100 ? "속도는 조금 더 붙여도 돼요." : r.wpm > 165 ? "조금 천천히 또박또박 해도 돼요." : ""}</p>
+      <div class="mdiff">${byLine.map((ws) => `<p>${ws.filter((x) => x.w).map((x) => `<span class="${x.ok ? "ok" : "miss"}">${esc(x.w)}</span>`).join(" ")}</p>`).join("")}</div>
+      <details class="small muted"><summary>들린 그대로 보기</summary><p>${esc(r.text || "(들린 말 없음)")}</p></details>`;
+  }
+  box.innerHTML = `<div class="row spread"><h3>방금 낭독</h3><span class="small muted">${esc(({ solo: "혼자 읽기", "erase:full": "지우기 1", "erase:key": "지우기 2", "erase:first": "지우기 3", "erase:cue": "지우기 4" })[r.mode] || r.mode)}</span></div>
+    <div class="grid2" style="margin-top:8px"><button class="btn" id="abMine">▶ 내 녹음</button><button class="btn" id="abNative">🔊 원어민</button></div>
+    <button class="btn ghost" id="abAlt" style="width:100%;margin-top:6px">⇄ 문장별로 원어민 → 나 번갈아 듣기</button>
+    ${body}`;
+  const audio = new Audio(r.url);
+  $("#abMine").onclick = () => { window.speechSynthesis?.cancel(); audio.currentTime = 0; audio.play(); };
+  $("#abNative").onclick = async () => { audio.pause(); for (const ln of m.lines) { await speak(monoText(ln.en), undefined, (S.settings.rate || 0.95) * monoRate); await sleep(250); } };
+  $("#abAlt").onclick = () => abAlternate(m, r, audio);
+}
+// 문장별 번갈아 듣기: 받아쓰기 단어 시각이 있으면 그 문장 구간만, 없으면 문장 길이 비율로 내 녹음을 자름
+async function abAlternate(m, r, audio) {
+  const lens = m.lines.map((ln) => monoText(ln.en).split(/\s+/).length), tot = lens.reduce((a, b) => a + b, 0);
+  let acc = 0; const cuts = lens.map((n) => { const s = (acc / tot) * r.dur; acc += n; return [s, (acc / tot) * r.dur]; });
+  const btn = $("#abAlt"); btn.disabled = true;
+  for (let li = 0; li < m.lines.length; li++) {
+    document.querySelectorAll("#monoText .mline").forEach((x) => x.classList.toggle("now", +x.dataset.li === li));
+    btn.textContent = `⇄ ${li + 1}/${m.lines.length} 원어민`;
+    await speak(monoText(m.lines[li].en), undefined, (S.settings.rate || 0.95) * monoRate);
+    await sleep(250);
+    btn.textContent = `⇄ ${li + 1}/${m.lines.length} 나`;
+    const [s, e] = cuts[li]; audio.currentTime = Math.max(0, s - 0.15); await audio.play().catch(() => {});
+    await new Promise((res) => { const t = setInterval(() => { if (audio.currentTime >= e + 0.25 || audio.paused || audio.ended) { clearInterval(t); audio.pause(); res(); } }, 60); });
+    await sleep(350);
+  }
+  document.querySelectorAll("#monoText .mline").forEach((x) => x.classList.remove("now"));
+  btn.disabled = false; btn.textContent = "⇄ 문장별로 원어민 → 나 번갈아 듣기";
+}
+
+async function renderRecs(m) {
+  const box = $("#monoRecs"); if (!box) return;
+  const all = (await recDB.all()).sort((a, b) => b.at.localeCompare(a.at));
+  const mine = all.filter((x) => x.mono === m.id);
+  if (!$("#monoRecs")) return;
+  if (!all.length) { box.innerHTML = `<p class="small muted" style="margin:6px 0 0">③ 혼자 읽기나 ④ 지우기에서 🎙 녹음하면 여기에 쌓여요. 1주 전 내 목소리와 비교해 들어 보세요.</p>`; return; }
+  const wkAgo = mine.find((x) => x.d <= addDays(today(), -6));
+  const row = (x) => `<div class="mrec"><button class="btn sm" data-play="${x.id}">▶</button><div style="flex:1;min-width:0"><b>${esc(x.d.slice(5).replace("-", "/"))}</b> <span class="small muted">${esc(x.mode.startsWith("erase") ? "지우기 " + ({ full: 1, key: 2, first: 3, cue: 4 })[x.mode.split(":")[1]] : "혼자 읽기")} · ${x.dur}초${x.wpm ? ` · ${x.wpm}wpm · 완독 ${x.acc}%` : ""}</span></div><button class="lnk x" data-delrec="${x.id}" aria-label="삭제">✕</button></div>`;
+  box.innerHTML = (wkAgo && mine[0] && mine[0].id !== wkAgo.id ? `<div class="mcmp"><b>1주 전과 비교</b><div class="grid2" style="margin-top:6px"><button class="btn sm" data-play="${wkAgo.id}">▶ ${esc(wkAgo.d.slice(5).replace("-", "/"))} (예전)</button><button class="btn sm primary" data-play="${mine[0].id}">▶ ${esc(mine[0].d.slice(5).replace("-", "/"))} (최근)</button></div></div>` : "")
+    + (mine.length ? mine.slice(0, 6).map(row).join("") : `<p class="small muted">이 독백의 녹음은 아직 없어요.</p>`)
+    + (all.length > mine.length ? `<details class="small" style="margin-top:6px"><summary class="muted">다른 독백 녹음 ${all.length - mine.length}개</summary>${all.filter((x) => x.mono !== m.id).slice(0, 20).map((x) => row(x).replace("<b>", `<b>${esc(x.title || "")} · `)).join("")}</details>` : "")
+    + `<p class="small muted" style="margin:6px 0 0">녹음 파일은 용량 때문에 이 기기 브라우저에만 저장돼요(다른 기기로는 기록 숫자만 이어져요).</p>`;
+  let cur = null;
+  box.querySelectorAll("[data-play]").forEach((b) => (b.onclick = () => { const x = all.find((r) => r.id === b.dataset.play); if (!x) return; if (cur) cur.pause(); window.speechSynthesis?.cancel(); cur = new Audio(URL.createObjectURL(x.blob)); cur.play(); }));
+  box.querySelectorAll("[data-delrec]").forEach((b) => (b.onclick = async () => { if (confirm("이 녹음을 지울까요?")) { await recDB.del(b.dataset.delrec); renderRecs(m); } }));
+}
+
+function newMonoSheet() {
+  openSheet(`<h2>내 이야기로 독백 만들기</h2>
+    <p class="small muted">오늘 있었던 일이나 말하고 싶은 주제를 한국어로 편하게 적으면, 원어민이 혼자 이야기하듯 6~8문장 구어체 독백으로 바꿔 드려요. 끊어 읽는 곳(/)과 연음 팁도 같이 붙어요.</p>
+    <textarea id="mIn" rows="5" placeholder="예: 오늘 아이 학교에서 학부모 상담이 있었는데 선생님이 아이가 수학을 잘한다고 칭찬해서 기분이 좋았다. 끝나고 같이 아이스크림을 먹었다."></textarea>
+    <button class="btn primary big" id="mGo" style="margin-top:10px">독백 만들기</button><div id="mOut" style="margin-top:10px"></div>`);
+  $("#mGo").onclick = async () => {
+    const t = $("#mIn").value.trim(); if (t.length < 6) return toast("조금 더 자세히 적어 주세요");
+    $("#mGo").disabled = true; $("#mOut").innerHTML = '<p class="small muted"><span class="spinner"></span> 만드는 중… (10~20초)</p>';
+    try {
+      const r = await ai("monologue", { text: t });
+      const lines = (r.lines || []).filter((l) => l.en && l.ko);
+      if (lines.length < 4) throw new Error("문장이 부족해요. 다시 시도해 주세요");
+      const mono = { id: "c-" + uid(), custom: true, title: r.title || t.slice(0, 16), topic: "내 이야기", cue: r.cue || "", src: t.slice(0, 300), lines: lines.map((l) => ({ en: l.en, ko: l.ko, tip: l.tip || "" })), at: new Date().toISOString() };
+      S.monos.unshift(mono); S.monos = S.monos.slice(0, 60);
+      S.done["mpick:" + today()] = mono.id; monoStep = "listen"; monoLast = null; save();
+      closeSheet(); go("mono"); toast("만들었어요! ① 듣기부터 시작해 보세요");
+    } catch (e) { $("#mOut").innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)}</p>`; $("#mGo").disabled = false; }
+  };
+}
+
 // ── 화면 ────────────────────────────────────────────────
-const TITLES = { home: "홈", speak: "오늘의 스피킹", write: "영작 훈련", train: "동사·5형식·시제", vault: "복습·보관함" };
+const TITLES = { home: "홈", speak: "오늘의 스피킹", mono: "독백 낭독", write: "영작 훈련", train: "동사·5형식·시제", vault: "복습·보관함" };
 let TAB = "home";
 function go(tab) {
   if (!TITLES[tab]) tab = "home";
@@ -495,7 +885,8 @@ function render() {
   $("#topTitle").textContent = TITLES[TAB];
   document.querySelectorAll("#tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.tab === TAB));
   const due = dueItems().length; const bd = $("#dueBadge"); bd.hidden = !due; bd.textContent = due;
-  ({ home: renderHome, speak: renderSpeak, write: renderWrite, train: renderTrain, vault: renderVault })[TAB]($("#view"));
+  if (TAB !== "mono") stopMono();
+  ({ home: renderHome, speak: renderSpeak, mono: renderMono, write: renderWrite, train: renderTrain, vault: renderVault })[TAB]($("#view"));
 }
 $("#tabbar").onclick = (e) => { const b = e.target.closest("button"); if (b) go(b.dataset.tab); };
 $("#toolsBtn").onclick = () => openTools();
@@ -593,7 +984,7 @@ function renderHome(v) {
   const mx = Math.max(10, ...days.map(tot));
   const hour = +new Intl.DateTimeFormat("en-NZ", { hour: "numeric", hour12: false, timeZone: "Pacific/Auckland" }).format(new Date());
   const greet = hour < 12 ? "Morning! ☀️" : hour < 18 ? "Kia ora! 👋" : "Evening! 🌙";
-  const totalSentences = Object.values(S.history).reduce((a, x) => a + (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0), 0);
+  const totalSentences = Object.values(S.history).reduce((a, x) => a + (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0) + (x.mono || 0) * 6, 0);
   v.innerHTML = `
     <div class="hello"><h2>${greet}</h2><p class="muted" style="margin:2px 0 0">오늘도 짧게, 소리 내서. 코드 <b>${esc(CODE)}</b></p></div>
     <div class="stats" style="margin-top:12px">
@@ -604,6 +995,7 @@ function renderHome(v) {
     <div class="card">
       <div class="row spread"><h3>오늘의 할 일</h3><span class="small muted">${esc(today())}</span></div>
       <div class="task" data-go="speak"><div class="ring" style="--p:${(speakN / 12) * 100}">${speakN}/12</div><div class="t"><b>스피킹 12문장</b><span>${esc(sc.title)}</span></div>›</div>
+      <div class="task" data-go="mono"><div class="ring" style="--p:${(h.mono || 0) ? 100 : 0}">${(h.mono || 0) ? "✓" : "0/1"}</div><div class="t"><b>독백 낭독 1개</b><span>${esc(todayMono()?.title || "")} · 30~60초 소리 내 읽기${monoStreak() ? ` · 🔥${monoStreak()}일째` : ""}</span></div>›</div>
       <div class="task" data-go="write"><div class="ring" style="--p:${(writeN / 10) * 100}">${writeN}/10</div><div class="t"><b>영작 10문장</b><span>${esc(ws.title)}</span></div>›</div>
       <div class="task" data-go="train"><div class="ring" style="--p:${Math.min(drillN / 10, 1) * 100}">${drillN}</div><div class="t"><b>기본동사 · 5형식</b><span>오늘 ${drillN}문장 · 목표 10</span></div>›</div>
       <div class="task" data-go="vault"><div class="ring" style="--p:${due ? 0 : 100}">${due}</div><div class="t"><b>복습</b><span>${due ? `오늘 다시 볼 문장 ${due}개` : "오늘 복습 끝! 👍"}</span></div>›</div>
@@ -619,6 +1011,7 @@ function renderHome(v) {
     <div class="card"><div class="row spread"><h3>복습 성과</h3><button class="btn sm" data-go="vault">복습하기</button></div>${reviewStatsHtml()}</div>
     <div class="card"><h3>내 약점 TOP 3</h3>${weaknessHtml()}</div>
     <div class="card"><div class="row spread"><h3>말하기 기록</h3><button class="btn sm" id="goSpeakRec">문장별 보기</button></div>${speakStatsHtml()}</div>
+    <div class="card"><div class="row spread"><h3>독백 낭독 기록</h3><button class="btn sm" data-go="mono">낭독하기</button></div>${monoStatsHtml()}</div>
     <div class="card"><h3>학습 달력 <small class="muted">최근 12주</small></h3>${heatmapHtml()}</div>
     <div class="card">
       <h3>이 말, 영어로 뭐라고 하지?</h3>

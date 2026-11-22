@@ -3,6 +3,7 @@
 //  - /api/state : 코드별 학습 이력 (KV, 키는 코드의 SHA-256 해시 — 코드 원문은 저장하지 않음)
 //  - /api/ai    : Gemini 호출 (대화 생성·원어민 변환·영작 교정·단어 풀이). 키는 Worker 비밀(GEMINI_API_KEY)
 //  - /api/dict  : 무료 영어 사전(dictionaryapi.dev) 프록시 — 미국·영국 발음 음성 링크
+//  - /api/stt   : 독백 녹음(WAV) → Workers AI Whisper 받아쓰기 (녹음은 저장하지 않음)
 
 // 빠른 작업(단어·변환·교정)은 Flash-Lite 먼저, 긴 생성(대화·영작 세트)은 Flash 먼저. 생각(thinking) 토큰은 꺼서 지연을 줄임
 const FAST = ["gemini-flash-lite-latest", "gemini-flash-latest"];
@@ -121,6 +122,12 @@ Example of the quality expected for "chuffed":
 {"word":"chuffed","ipaUS":"/tʃʌft/","ipaUK":"/tʃʌft/","pos":"adjective","ko":"뿌듯한, 기쁘고 흡족한","register":"informal","region":"NZ/UK","nuance":"좋은 일이 생겨서 뿌듯하고 기분이 좋을 때 쓰는 구어체예요. 'happy'보다 자랑스러운 기쁨이 담겨 있어요. 격식 있는 글에서는 쓰지 않아요.","similar":[{"w":"stoked","d":"더 들뜨고 신남 (NZ·호주 슬랭)"},{"w":"pleased","d":"무난하고 점잖은 기쁨"}],"examples":[{"en":"I'm so chuffed with how the kitchen turned out.","ko":"부엌이 이렇게 나와서 너무 뿌듯해."}],"collocations":["chuffed to bits","chuffed with"],"drill":[{"ko":"시험에 붙어서 너무 뿌듯해.","en":"I'm so chuffed I passed my test."}]}
 JSON only, same fields: {"word":"${word}","ipaUS":"/.../","ipaUK":"/.../","pos":"...","ko":"...","register":"...","region":"...","nuance":"...","similar":[{"w":"...","d":"..."}],"examples":[{"en":"...","ko":"..."}] (3 items),"collocations":["..."] (max 4),"drill":[{"ko":"...","en":"..."}] (2 items)}`,
 
+  monologue: ({ text }) => `The learner (a Korean adult living in Auckland) wants to TALK ALONE about this, in first person: "${text}".
+Turn it into a natural spoken MONOLOGUE (one person talking to a friend, not a dialogue) for read-aloud practice.
+Rules: 6-8 sentences, 30-60 seconds total, each sentence 8-22 words. Real spoken English: contractions (I'm, it's, we've), light fillers where natural (you know, honestly, so, like, to be fair), easy NZ flavour, past tense for past events.
+Mark natural breath/chunk breaks with " / " inside each sentence (2-4 chunks per sentence), e.g. "So last weekend / we drove out to Piha, / which is about an hour away."
+JSON: {"title":"short Korean title","cue":"Korean outline of the story in 4-6 short keywords separated by ' · '","lines":[{"en":"sentence with / marks","ko":"natural Korean translation","tip":"optional short Korean note on linking/reduction/stress or a useful phrase (e.g. 'want to → wanna'), or empty"}]}`,
+
   writing: ({ topic }) => `Create a 10-line spoken dialogue (A/B alternating, A first, 5 lines each) about: "${topic}", set in everyday Auckland life.
 This is for English composition practice: the learner sees the Korean and must say it in English.
 JSON: {"title":"short Korean title","lines":[{"sp":"A","ko":"natural Korean","en":"natural spoken English model answer","hint":"key words or pattern hint in English (2-4 words)"}]}`,
@@ -215,6 +222,7 @@ const VALID = {
   drill: (r) => r && Array.isArray(r.items) && r.items.length,
   dialogue: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en).length >= 6,
   writing: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en && l.ko).length >= 5,
+  monologue: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en && l.ko).length >= 5,
 };
 async function callCF(env, prompt, task, models = CF_MODELS, opt = {}) {
   if (!env.AI) throw new Error("no-ai-binding");
@@ -324,6 +332,7 @@ async function handleAI(request, env) {
       if (!good.length) throw new Error(`${n}형식에 맞는 문장을 만들지 못했어요`);
       result = { ...result, items: good.slice(0, 6) };
     }
+    if (body.task === "monologue") result = { ...result, lines: (result.lines || []).filter((l) => l && l.en && l.ko).slice(0, 8).map((l) => ({ en: String(l.en).replace(/\s*\/\s*/g, " / ").trim(), ko: l.ko, tip: l.tip || "" })) };
     if (body.task === "drill" && body.kind === "tense") result = { ...result, items: (result.items || []).filter((it) => it.en && it.ko && (!it.hl || it.en.toLowerCase().includes(String(it.hl).toLowerCase()))) };
     if (engine === "best" && result) result._best = true;
     if (wkey && env.STORE && result && result.ko) await env.STORE.put(wkey, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 90 });
@@ -331,6 +340,40 @@ async function handleAI(request, env) {
   } catch (e) {
     return json({ error: `AI가 잠시 바쁩니다 (${e.message}). 잠시 후 다시 시도해 주세요` }, 502);
   }
+}
+
+// ── 받아쓰기(STT): 독백 녹음을 Whisper 로 글자로 ─────────────
+// 원문을 힌트로 주지 않는다(들은 그대로 적어야 채점이 정직함). 녹음 파일은 저장하지 않음.
+const STT_MAX_BYTES = 6_000_000;   // 16kHz 모노 WAV 약 3분
+function b64(buf) {
+  const u = new Uint8Array(buf); let s = "";
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+async function handleSTT(request, env) {
+  if (request.method !== "POST") return json({ error: "method" }, 405);
+  if (!env.AI) return json({ error: "Workers AI 가 연결되지 않았습니다" }, 503);
+  const code = await readCode(request);
+  if (!code) return json({ error: "코드가 필요합니다" }, 400);
+  const buf = await request.arrayBuffer();
+  if (buf.byteLength < 1000) return json({ error: "녹음이 너무 짧아요" }, 400);
+  if (buf.byteLength > STT_MAX_BYTES) return json({ error: "녹음이 너무 길어요 (3분 이내)" }, 413);
+  if (env.STORE) {
+    const day = nzToday(), ck = await codeKey(code, env);
+    if (!(await bump(env, `ai:${day}:total`, AI_TOTAL_PER_DAY))) return json({ error: "오늘 앱 전체 AI 한도를 다 썼습니다" }, 429);
+    if (!(await bump(env, `ai:${day}:${ck}`, AI_PER_CODE_PER_DAY))) return json({ error: `오늘 AI 사용 한도(${AI_PER_CODE_PER_DAY}회)를 다 썼습니다` }, 429);
+  }
+  let lastErr = "";
+  try {
+    const r = await env.AI.run("@cf/openai/whisper-large-v3-turbo", { audio: b64(buf), language: "en", task: "transcribe" });
+    const words = (r.segments || []).flatMap((sg) => sg.words || []).map((w) => ({ w: String(w.word || "").trim(), s: w.start, e: w.end }));
+    if (r && typeof r.text === "string") return json({ text: r.text.trim(), words, via: "whisper-turbo" });
+  } catch (e) { lastErr = e.message; }
+  try {
+    const r = await env.AI.run("@cf/openai/whisper", { audio: [...new Uint8Array(buf)] });
+    if (r && typeof r.text === "string") return json({ text: r.text.trim(), words: (r.words || []).map((w) => ({ w: String(w.word || "").trim(), s: w.start, e: w.end })), via: "whisper" });
+  } catch (e) { lastErr = e.message; }
+  return json({ error: "받아쓰기에 실패했어요 (" + lastErr + ")" }, 502);
 }
 
 // ── 사전 ───────────────────────────────────────────────────
@@ -361,6 +404,7 @@ export default {
       if (pathname === "/api/state") return await handleState(request, env);
       if (pathname === "/api/ai") return await handleAI(request, env);
       if (pathname === "/api/dict") return await handleDict(request);
+      if (pathname === "/api/stt") return await handleSTT(request, env);
       if (pathname === "/api/health") return json({ ok: true, kv: !!env.STORE, ai: !!env.GEMINI_API_KEY, wai: !!env.AI });
     } catch (e) {
       return json({ error: "서버 오류: " + e.message }, 500);

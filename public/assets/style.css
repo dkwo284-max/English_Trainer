@@ -48,7 +48,7 @@ h2 { font-size: 20px; } h3 { font-size: 16px; }
 .dot.ok { background: var(--good); } .dot.busy { background: var(--warn); } .dot.err { background: var(--bad); }
 .icon-btn { border: 0; background: var(--surface); width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; cursor: pointer; box-shadow: var(--shadow); }
 .view { max-width: 720px; margin: 0 auto; padding: 4px 16px calc(var(--tab-h) + 28px + env(safe-area-inset-bottom)); }
-.tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(5, 1fr); height: calc(var(--tab-h) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); background: var(--surface); border-top: 1px solid var(--line); }
+.tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(6, 1fr); height: calc(var(--tab-h) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); background: var(--surface); border-top: 1px solid var(--line); }
 .tabbar button { position: relative; border: 0; background: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .tabbar svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linejoin: round; stroke-linecap: round; }
 .tabbar button.on { color: var(--accent); font-weight: 700; }
@@ -242,3 +242,31 @@ html, body { overflow-x: hidden; }
 .rel { align-self: center; font-weight: 800; color: var(--muted); }
 .tl { width: 100%; height: auto; display: block; }
 .tform { margin-top: 4px; } .tform .tag { font-size: 13px; }
+
+/* 독백 낭독 */
+.mono-text .mline { padding: 10px 0; border-bottom: 1px dashed var(--line); scroll-margin: 90px; }
+.mono-text .mline:last-child { border-bottom: 0; }
+.mono-text .mline.now { background: var(--accent-soft); border-radius: 10px; padding-left: 8px; padding-right: 8px; }
+.mono-text .en { font-size: 19px; line-height: 1.75; margin: 0; }
+.mch { border-radius: 6px; padding: 1px 2px; transition: background .15s, color .15s; }
+.mch.past { color: var(--muted); }
+.mch.now { background: var(--key); color: var(--key-ink); box-shadow: 0 0 0 2px var(--key); }
+.mslash { color: var(--accent); font-style: normal; font-weight: 700; opacity: .55; margin: 0 4px; }
+.mblank { display: inline-block; height: 1em; border-bottom: 2px solid var(--muted); vertical-align: -2px; opacity: .55; }
+.mcue { font-size: 20px; line-height: 1.6; font-weight: 700; }
+.mdiff p { margin: 4px 0; line-height: 1.7; }
+.mdiff .ok { color: var(--good); }
+.mdiff .miss { color: var(--bad); background: var(--bad-soft); border-radius: 4px; padding: 0 2px; text-decoration: underline wavy; text-underline-offset: 3px; }
+.mrec { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.mrec:last-of-type { border-bottom: 0; }
+.mcmp { background: var(--surface-2); border-radius: 12px; padding: 10px; margin: 8px 0; }
+.lnk { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 0 2px; text-decoration: none; }
+.lnk.x { color: var(--muted); }
+.chips.wrap { flex-wrap: wrap; overflow: visible; }
+.wk-chip { display: inline-flex; align-items: center; gap: 4px; }
+.wk-chip small { color: var(--bad); font-weight: 700; }
+.mspark { width: 100%; height: 76px; margin-top: 8px; }
+.mgoal { stroke: var(--line); stroke-dasharray: 4 4; }
+.mgoal-t { font-size: 9px; fill: var(--muted); }
+.mdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+@media (max-width: 380px) { .tabbar button span { font-size: 11px; } }

@@ -125,8 +125,11 @@ JSON only, same fields: {"word":"${word}","ipaUS":"/.../","ipaUK":"/.../","pos":
   monologue: ({ text }) => `The learner (a Korean adult living in Auckland) wants to TALK ALONE about this, in first person: "${text}".
 Turn it into a natural spoken MONOLOGUE (one person talking to a friend, not a dialogue) for read-aloud practice.
 Rules: 6-8 sentences, 30-60 seconds total, each sentence 8-22 words. Real spoken English: contractions (I'm, it's, we've), light fillers where natural (you know, honestly, so, like, to be fair), easy NZ flavour, past tense for past events.
-Mark natural breath/chunk breaks with " / " inside each sentence (2-4 chunks per sentence), e.g. "So last weekend / we drove out to Piha, / which is about an hour away."
-JSON: {"title":"short Korean title","cue":"Korean outline of the story in 4-6 short keywords separated by ' · '","lines":[{"en":"sentence with / marks","ko":"natural Korean translation","tip":"optional short Korean note on linking/reduction/stress or a useful phrase (e.g. 'want to → wanna'), or empty"}]}`,
+Every sentence must be grammatically correct, complete (ending with . ! or ?) and something a native speaker would really say (e.g. "doing really well", never "doing heaps well").
+Mark natural breath/chunk breaks with " / " inside each English sentence ONLY (2-4 chunks per sentence), e.g. "So last weekend / we drove out to Piha, / which is about an hour away."
+"ko": one natural, fluent Korean sentence (구어체 해요체), NO slashes. "tip": ONE short Korean note that really helps speaking — either how it sounds when spoken fast (e.g. "want to → 워너", "a bit of a → 어비러버") or what a natural phrase means (e.g. "grab = 사 오다, 먹으러 가다 (구어)"); never translate single easy words; use "" if nothing useful.
+Example line: {"en":"After the meeting / we grabbed an ice cream / on the way home.","ko":"상담 끝나고 집에 오는 길에 아이스크림을 하나 사 먹었어요.","tip":"grab = (음식을) 간단히 사 먹다 (구어)"}
+JSON: {"title":"short Korean title","cue":"Korean outline of the story in 4-6 short keywords separated by ' · '","lines":[{"en":"...","ko":"...","tip":"..."}]}`,
 
   writing: ({ topic }) => `Create a 10-line spoken dialogue (A/B alternating, A first, 5 lines each) about: "${topic}", set in everyday Auckland life.
 This is for English composition practice: the learner sees the Korean and must say it in English.
@@ -332,7 +335,12 @@ async function handleAI(request, env) {
       if (!good.length) throw new Error(`${n}형식에 맞는 문장을 만들지 못했어요`);
       result = { ...result, items: good.slice(0, 6) };
     }
-    if (body.task === "monologue") result = { ...result, lines: (result.lines || []).filter((l) => l && l.en && l.ko).slice(0, 8).map((l) => ({ en: String(l.en).replace(/\s*\/\s*/g, " / ").trim(), ko: l.ko, tip: l.tip || "" })) };
+    if (body.task === "monologue") result = { ...result, lines: (result.lines || []).filter((l) => l && l.en && l.ko).slice(0, 8).map((l) => {
+      let en = String(l.en).replace(/\s*\/\s*/g, " / ").replace(/^[\s/]+|[\s/]+$/g, "").trim();
+      if (!/[.!?]["']?$/.test(en)) en += ".";
+      const tip = String(l.tip || "").trim();
+      return { en, ko: String(l.ko).replace(/\s*\/\s*/g, " ").replace(/\s{2,}/g, " ").trim(), tip: /→\s*$|^[^가-힣]*$/.test(tip) ? "" : tip };
+    }) };
     if (body.task === "drill" && body.kind === "tense") result = { ...result, items: (result.items || []).filter((it) => it.en && it.ko && (!it.hl || it.en.toLowerCase().includes(String(it.hl).toLowerCase()))) };
     if (engine === "best" && result) result._best = true;
     if (wkey && env.STORE && result && result.ko) await env.STORE.put(wkey, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 90 });

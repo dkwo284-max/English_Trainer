@@ -252,7 +252,10 @@ html, body { overflow-x: hidden; }
 .mch.past { color: var(--muted); }
 .mch.now { background: var(--key); color: var(--key-ink); box-shadow: 0 0 0 2px var(--key); }
 .mslash { color: var(--accent); font-style: normal; font-weight: 700; opacity: .55; margin: 0 4px; }
-.mblank { display: inline-block; height: 1em; border-bottom: 2px solid var(--muted); vertical-align: -2px; opacity: .55; }
+.mblank { position: relative; display: inline-block; height: 1em; border-bottom: 2px solid var(--muted); vertical-align: -2px; opacity: .55; cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+.mblank::before { content: ""; position: absolute; inset: -10px -5px; }   /* 손가락으로 누르기 쉽게 터치 영역을 넓힘 */
+.mblank.peek { opacity: 1; border-bottom-color: var(--accent); }
+.mblank.peek::after { content: attr(data-w); position: absolute; left: 50%; bottom: 125%; transform: translateX(-50%); z-index: 5; padding: 2px 9px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 700; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.25); pointer-events: none; }
 .mcue { font-size: 20px; line-height: 1.6; font-weight: 700; }
 .mdiff p { margin: 4px 0; line-height: 1.7; }
 .mdiff .ok { color: var(--good); }

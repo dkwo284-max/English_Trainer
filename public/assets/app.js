@@ -502,7 +502,12 @@ const MONO_ROUNDS = [["full", "1 전체"], ["key", "2 핵심 단어"], ["first",
 let monoStep = "listen", monoRound = "full", monoRate = 1, monoKo = true, monoRun = null, monoLast = null;
 
 // 점점 지우기: 단어를 밑줄 칸으로
-function blankWord(w) { return `<span class="mblank" style="width:${Math.min(w.length, 9) * 0.62 + 0.4}em"></span>`; }
+function blankWord(w) { return `<span class="mblank" data-w="${esc(w)}" style="width:${Math.min(w.length, 9) * 0.62 + 0.4}em"></span>`; }
+// 빈칸을 누르고 있는 동안만 그 단어를 보여 주고, 손을 떼면(또는 화면을 스크롤하면) 다시 가린다
+const peekOff = () => document.querySelectorAll(".mblank.peek").forEach((b) => b.classList.remove("peek"));
+document.addEventListener("pointerdown", (e) => { const b = e.target.closest?.(".mblank"); if (b) { peekOff(); b.classList.add("peek"); } });
+["pointerup", "pointercancel", "dragstart", "scroll"].forEach((ev) => window.addEventListener(ev, peekOff, true));
+document.addEventListener("contextmenu", (e) => { if (e.target.closest?.(".mblank")) e.preventDefault(); });   // 길게 누를 때 뜨는 메뉴 막기
 function maskChunk(c, round) {
   if (round === "full") return wrapWords(c);
   const words = c.split(/\s+/);
@@ -674,7 +679,7 @@ function renderMono(v) {
       ${monoStep === "erase" ? `<div class="seg" id="monoRoundSeg">${MONO_ROUNDS.map(([k, l]) => `<button data-r="${k}" class="${monoRound === k ? "on" : ""}">${l}</button>`).join("")}</div>` : ""}
       <div class="row small" style="gap:8px;margin-top:2px"><span class="muted">속도</span><div class="seg" id="monoRateSeg" style="flex:1;margin:4px 0">${[[0.8, "0.8×"], [1, "1.0×"], [1.1, "1.1×"]].map(([r, l]) => `<button data-v="${r}" class="${monoRate === r ? "on" : ""}">${l}</button>`).join("")}</div>
         <label class="small muted" style="white-space:nowrap"><input type="checkbox" id="monoKo" ${monoKo ? "checked" : ""}> 한국어</label></div>
-      <p class="small muted" style="margin:4px 0 0">${({ listen: "원어민 음성을 들으며 끊어 읽는 곳(하이라이트)만 눈으로 따라가세요.", along: "음성과 동시에 소리 내서 같이 읽어요(섀도잉). 음성보다 반 박자 늦어도 괜찮아요.", solo: "음성 없이 하이라이트 속도에 맞춰 혼자 읽어요. 🎙 녹음하면 원어민과 비교하고 채점할 수 있어요.", erase: monoRound === "cue" ? "줄거리만 보고 내 말로 독백해 보세요. 녹음 후 채점하면 원문을 얼마나 살려 말했는지 보여요." : "글자를 조금씩 지웠어요. 빈칸은 기억해서 채워 말하세요. 1→4 단계로 갈수록 내 말이 돼요." })[monoStep]}</p>
+      <p class="small muted" style="margin:4px 0 0">${({ listen: "원어민 음성을 들으며 끊어 읽는 곳(하이라이트)만 눈으로 따라가세요.", along: "음성과 동시에 소리 내서 같이 읽어요(섀도잉). 음성보다 반 박자 늦어도 괜찮아요.", solo: "음성 없이 하이라이트 속도에 맞춰 혼자 읽어요. 🎙 녹음하면 원어민과 비교하고 채점할 수 있어요.", erase: monoRound === "cue" ? "줄거리만 보고 내 말로 독백해 보세요. 녹음 후 채점하면 원문을 얼마나 살려 말했는지 보여요." : "글자를 조금씩 지웠어요. 빈칸은 기억해서 채워 말하고, 막히면 빈칸을 누르고 있어 보세요(떼면 다시 가려져요). 1→4 단계로 갈수록 내 말이 돼요." })[monoStep]}</p>
     </div>
     <div class="card mono-text" id="monoText">${monoStep === "erase" && monoRound === "cue"
       ? `<div class="mcue">${esc(m.cue || m.lines.map((l) => l.ko).join(" "))}</div>${monoKo ? `<div class="small muted" style="margin-top:8px">${m.lines.map((l) => esc(l.ko)).join("<br>")}</div>` : ""}`

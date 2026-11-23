@@ -499,6 +499,16 @@ const monoText = (en) => String(en || "").replace(/\s*\/\s*/g, " ").trim();
 const chunksOf = (en) => String(en || "").split(/\s*\/\s*/).map((c) => c.trim()).filter(Boolean);
 const STOP = new Set("a an the and or but so to of in on at for with from by up out is am are was were be been it its it's i i'm i've i'd i'll me my we we're we've our you you're your he she they them their this that there these those just really very do did does don't didn't can can't will would could should have has had not no yes as if about like then than too also all some any".split(" "));
 const MONO_ROUNDS = [["full", "1 전체"], ["key", "2 핵심 단어"], ["first", "3 첫 단어"], ["cue", "4 줄거리만"]];
+// ④-4 줄거리만: 문장마다 영어 정답을 숨겨 두고 눌렀을 때만 보여 준다 (바꾸면 다시 가림)
+let monoAns = new Set(), monoAnsKey = "";
+const cueLineHtml = (m, li) => {
+  const ln = m.lines[li], on = monoAns.has(li);
+  return `<div class="ko mq"><b>${li + 1}.</b> ${esc(ln.ko)}</div>` + (on
+    ? `<div class="mans"><p class="en">${chunksOf(ln.en).map((c) => wrapWords(c)).join('<i class="mslash">/</i>')}</p>
+        ${ln.tip ? `<div class="tip">${esc(ln.tip)}</div>` : ""}
+        <div class="acts macts">${sayBtns(monoText(ln.en))}${starBtn({ en: monoText(ln.en), ko: ln.ko, src: m.title })}<button type="button" class="act" data-ans="${li}">🙈 다시 가리기</button></div></div>`
+    : `<button type="button" class="mans-btn" data-ans="${li}" aria-label="${li + 1}번 영어 정답 보기">👆 눌러서 영어 정답 보기</button>`);
+};
 let monoStep = "listen", monoRound = "full", monoRate = 1, monoKo = true, monoRun = null, monoLast = null;
 
 // 점점 지우기: 단어를 밑줄 칸으로
@@ -679,10 +689,11 @@ function renderMono(v) {
       ${monoStep === "erase" ? `<div class="seg" id="monoRoundSeg">${MONO_ROUNDS.map(([k, l]) => `<button data-r="${k}" class="${monoRound === k ? "on" : ""}">${l}</button>`).join("")}</div>` : ""}
       <div class="row small" style="gap:8px;margin-top:2px"><span class="muted">속도</span><div class="seg" id="monoRateSeg" style="flex:1;margin:4px 0">${[[0.8, "0.8×"], [1, "1.0×"], [1.1, "1.1×"]].map(([r, l]) => `<button data-v="${r}" class="${monoRate === r ? "on" : ""}">${l}</button>`).join("")}</div>
         <label class="small muted" style="white-space:nowrap"><input type="checkbox" id="monoKo" ${monoKo ? "checked" : ""}> 한국어</label></div>
-      <p class="small muted" style="margin:4px 0 0">${({ listen: "원어민 음성을 들으며 끊어 읽는 곳(하이라이트)만 눈으로 따라가세요.", along: "음성과 동시에 소리 내서 같이 읽어요(섀도잉). 음성보다 반 박자 늦어도 괜찮아요.", solo: "음성 없이 하이라이트 속도에 맞춰 혼자 읽어요. 🎙 녹음하면 원어민과 비교하고 채점할 수 있어요.", erase: monoRound === "cue" ? "줄거리만 보고 내 말로 독백해 보세요. 녹음 후 채점하면 원문을 얼마나 살려 말했는지 보여요." : "글자를 조금씩 지웠어요. 빈칸은 기억해서 채워 말하고, 막히면 빈칸을 누르고 있어 보세요(떼면 다시 가려져요). 1→4 단계로 갈수록 내 말이 돼요." })[monoStep]}</p>
+      <p class="small muted" style="margin:4px 0 0">${({ listen: "원어민 음성을 들으며 끊어 읽는 곳(하이라이트)만 눈으로 따라가세요.", along: "음성과 동시에 소리 내서 같이 읽어요(섀도잉). 음성보다 반 박자 늦어도 괜찮아요.", solo: "음성 없이 하이라이트 속도에 맞춰 혼자 읽어요. 🎙 녹음하면 원어민과 비교하고 채점할 수 있어요.", erase: monoRound === "cue" ? "줄거리와 한국어 문장만 보고 영어로 먼저 말해 보세요. 막히면 문장마다 '눌러서 영어 정답 보기'로 확인하고, 다시 눌러 가릴 수 있어요. 녹음하면 원문을 얼마나 살려 말했는지 채점해요." : "글자를 조금씩 지웠어요. 빈칸은 기억해서 채워 말하고, 막히면 빈칸을 누르고 있어 보세요(떼면 다시 가려져요). 1→4 단계로 갈수록 내 말이 돼요." })[monoStep]}</p>
     </div>
     <div class="card mono-text" id="monoText">${monoStep === "erase" && monoRound === "cue"
-      ? `<div class="mcue">${esc(m.cue || m.lines.map((l) => l.ko).join(" "))}</div>${monoKo ? `<div class="small muted" style="margin-top:8px">${m.lines.map((l) => esc(l.ko)).join("<br>")}</div>` : ""}`
+      ? `<div class="mcue">${esc(m.cue || "")}</div><p class="small muted" style="margin:6px 0 2px">한국어 문장을 보고 영어로 먼저 말해 보세요. 막히면 눌러서 정답을 확인하세요.</p>
+        ${m.lines.map((_, li) => `<div class="mline mcueline" data-li="${li}">${cueLineHtml(m, li)}</div>`).join("")}`
       : m.lines.map((ln, li) => `<div class="mline" data-li="${li}"><p class="en">${chunksOf(ln.en).map((c, ci) => `<span class="mch" data-k="${li}-${ci}">${maskChunk(c, monoStep === "erase" ? monoRound : "full")}</span>`).join('<i class="mslash">/</i>')}</p>
         ${monoKo ? `<div class="ko">${esc(ln.ko)}</div>` : ""}${!solo && ln.tip ? `<div class="tip">${esc(ln.tip)}</div>` : ""}
         <div class="acts macts">${sayBtns(monoText(ln.en))}${starBtn({ en: monoText(ln.en), ko: ln.ko, src: m.title })}</div></div>`).join("")}</div>
@@ -700,6 +711,15 @@ function renderMono(v) {
   seg("#monoRoundSeg", "r", { cur: () => monoRound, set: (x) => (monoRound = x) });
   seg("#monoRateSeg", "v", { cur: () => monoRate, set: (x) => (monoRate = +x) });
   $("#monoKo").onchange = (e) => { monoKo = e.target.checked; renderMono(v); };
+  const ansKey = m.id + "|" + monoStep + "|" + monoRound;
+  if (ansKey !== monoAnsKey) { monoAnsKey = ansKey; monoAns = new Set(); }   // 다른 독백·단계로 가면 정답을 다시 모두 가림
+  if (monoStep === "erase" && monoRound === "cue") {
+    $("#monoText").onclick = (e) => {
+      const b = e.target.closest("[data-ans]"); if (!b) return;
+      const li = +b.dataset.ans; monoAns.has(li) ? monoAns.delete(li) : monoAns.add(li);
+      const line = b.closest(".mcueline"); if (line) line.innerHTML = cueLineHtml(m, li);   // 그 문장만 바꿔 스크롤 위치 유지
+    };
+  }
   $("#monoChips").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
     stopMono();

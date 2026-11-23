@@ -275,3 +275,9 @@ html, body { overflow-x: hidden; }
 @media (max-width: 380px) { .tabbar button span { font-size: 11px; } }
 #monoStepSeg button { white-space: nowrap; font-size: 13px; padding: 8px 2px; }
 .macts { margin-top: 6px; }
+
+.mcueline { padding: 10px 0; }
+.mq { font-size: 16px; color: var(--text); margin: 0 0 6px; }
+.mans-btn { display: block; width: 100%; padding: 10px 12px; border: 1px dashed var(--accent); border-radius: 12px; background: var(--accent-soft); color: var(--accent); font: inherit; font-weight: 700; cursor: pointer; text-align: center; }
+.mans { padding: 8px 10px; border-radius: 12px; background: var(--b-bubble); }
+.mans .en { margin: 0; font-size: 19px; line-height: 1.7; }

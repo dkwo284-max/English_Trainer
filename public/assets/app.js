@@ -162,6 +162,19 @@ async function login(code) {
   $("#login").hidden = true; $("#app").hidden = false;
   $("#codeLabel").textContent = CODE;
   go(location.hash.slice(1) || "home");
+  takePendingAdd();
+}
+let rvAddCtx = null;   // 외부에서 보낸 문장의 출처({from:"news", ko}) — 검토 요청·출처 표시에 사용
+function takePendingAdd() {
+  let p = null; try { p = JSON.parse(sessionStorage.getItem("et:pendingAdd") || "null"); sessionStorage.removeItem("et:pendingAdd"); } catch {}
+  if (!p || !p.text) return;
+  rvAddCtx = { from: p.from || "", ko: p.ko || "" };
+  vaultMode = "due"; go("vault");
+  const box = $("#rvAddBox"), inp = $("#rvAddIn"); if (!box || !inp) return;
+  box.open = true; inp.value = p.text;
+  if (p.from === "news") toast("데일리 브리프에서 보낸 문장이에요. 검토할게요");
+  box.scrollIntoView({ block: "start" });
+  $("#rvAddGo").click();
 }
 
 // ── 기록 ────────────────────────────────────────────────
@@ -215,7 +228,7 @@ function addManualReview(it, useNatural) {
   let w = S.wrong.find((x) => !x.del && norm(x.en) === key);
   const ko = useNatural && it.naturalKo ? it.naturalKo : it.ko;
   if (w) { Object.assign(w, { ko: ko || w.ko, upd: now }); save(); return "dup"; }
-  w = { id: uid(), ko, en, src: "직접 추가", reps: 0, okc: 0, miss: 0, streak: 0, manual: true, at: now, upd: now, box: 0, due: today(),
+  w = { id: uid(), ko, en, src: rvAddCtx?.from === "news" ? "뉴스에서" : "직접 추가", reps: 0, okc: 0, miss: 0, streak: 0, manual: true, at: now, upd: now, box: 0, due: today(),
     mine: useNatural && norm(it.en) !== key ? it.en : "", why: it.why || "", natural: it.natural || "", types: Array.isArray(it.types) ? it.types : [] };
   S.wrong.unshift(w); save(); return true;
 }
@@ -227,7 +240,8 @@ async function reviewAddCheck(v) {
   const pick = lines.slice(0, 10);
   btn.disabled = true; msg.innerHTML = `<span class="spinner"></span> ${pick.length}문장 검토 중…`; out.innerHTML = "";
   try {
-    const r = await ai("review_add", { text: pick.map((x, i) => `${i + 1}. ${x}`).join("\n") });
+    const fromNews = rvAddCtx?.from === "news";
+    const r = await ai("review_add", { text: pick.map((x, i) => `${i + 1}. ${x}`).join("\n"), ...(fromNews ? { ctx: "news", hint: rvAddCtx.ko || "" } : {}) });
     const items = (r.items || []).filter((x) => x && x.en && x.ko).slice(0, pick.length);
     if (!items.length) throw new Error("검토 결과가 비었어요. 다시 눌러 주세요");
     msg.textContent = `${items.length}문장 검토 완료`;
@@ -239,7 +253,8 @@ function renderReviewAdd(v, items) {
   const out = $("#rvAddOut");
   const same = (it) => norm(it.natural) === norm(it.en);
   // 문법이 틀리면 고친 문장이 기본, 문법은 맞는데 어색하면(6점 이하) 고친 문장 추천, 아니면 내 문장 그대로
-  const pref = (it) => (!same(it) && (it.grammar === false || (+it.score || 10) <= 6) ? "fix" : "mine");
+  const news = rvAddCtx?.from === "news";   // 뉴스 제목은 말할 때 쓰는 문장으로 바꾼 쪽이 기본
+  const pref = (it) => (!same(it) && (news || it.grammar === false || (+it.score || 10) <= 6) ? "fix" : "mine");
   out.innerHTML = items.map((it, i) => {
     const sc = Math.max(1, Math.min(10, Math.round(+it.score || 0))) || null, p = pref(it), isSame = same(it);
     return `<div class="item rvadd" data-i="${i}">
@@ -248,10 +263,10 @@ function renderReviewAdd(v, items) {
         <span class="rvtag ${it.grammar === false ? "bad" : "good"}">${it.grammar === false ? "문법 ✗" : "문법 ✓"}</span>
         ${sc ? `<span class="rvtag ${sc >= 8 ? "good" : sc >= 6 ? "new" : "bad"}">자연스러움 ${sc}/10</span>` : ""}</div>
       ${it.grammar === false && it.grammarNote ? `<div class="small">📝 ${esc(it.grammarNote)}</div>` : ""}
-      ${!isSame ? `<div class="keybox"><b>원어민이라면</b> ${esc(it.natural)} ${sayBtns(it.natural)}${it.naturalKo ? `<div class="small muted">${esc(it.naturalKo)}</div>` : ""}</div>` : ""}
+      ${!isSame ? `<div class="keybox"><b>${news ? "말로 하면" : "원어민이라면"}</b> ${esc(it.natural)} ${sayBtns(it.natural)}${it.naturalKo ? `<div class="small muted">${esc(it.naturalKo)}</div>` : ""}</div>` : ""}
       ${it.why ? `<div class="small muted">${esc(it.why)}</div>` : ""}
       <div class="acts" data-acts="${i}">${isSame ? `<button class="btn sm primary" data-add="mine">복습에 추가</button>`
-        : `<button class="btn sm ${p === "mine" ? "primary" : ""}" data-add="mine">내 문장 그대로 추가</button><button class="btn sm ${p === "fix" ? "primary" : ""}" data-add="fix">고친 문장으로 추가${p === "fix" ? " (추천)" : ""}</button>`}</div></div>`;
+        : `<button class="btn sm ${p === "mine" ? "primary" : ""}" data-add="mine">${news ? "제목 그대로 추가" : "내 문장 그대로 추가"}</button><button class="btn sm ${p === "fix" ? "primary" : ""}" data-add="fix">${news ? "말하는 문장으로 추가" : "고친 문장으로 추가"}${p === "fix" ? " (추천)" : ""}</button>`}</div></div>`;
   }).join("") + (items.length > 1 ? `<button class="btn primary big" id="rvAddAll" style="margin-top:8px">추천대로 모두 추가 (${items.length})</button>` : "");
   const done = (i, res, useFix) => {
     const box = out.querySelector(`[data-acts="${i}"]`); if (!box) return;
@@ -262,7 +277,7 @@ function renderReviewAdd(v, items) {
     const i = +b.closest("[data-i]").dataset.i, fix = b.dataset.add === "fix";
     done(i, addManualReview(items[i], fix), fix); afterAdd();
   }));
-  const afterAdd = () => { if ([...out.querySelectorAll("[data-acts]")].every((x) => x.dataset.done)) { $("#rvAddIn").value = ""; const a = $("#rvAddAll"); if (a) a.remove(); toast("복습 목록에 추가했어요"); setTimeout(() => renderVault(v), 1200); } };
+  const afterAdd = () => { if ([...out.querySelectorAll("[data-acts]")].every((x) => x.dataset.done)) { $("#rvAddIn").value = ""; rvAddCtx = null; const a = $("#rvAddAll"); if (a) a.remove(); toast("복습 목록에 추가했어요"); setTimeout(() => renderVault(v), 1200); } };
   if ($("#rvAddAll")) $("#rvAddAll").onclick = () => { items.forEach((it, i) => { if (!out.querySelector(`[data-acts="${i}"]`)?.dataset.done) { const fix = pref(it) === "fix"; done(i, addManualReview(it, fix), fix); } }); afterAdd(); };
 }
 function reviewResult(w, ok) {
@@ -1720,6 +1735,7 @@ function renderVault(v) {
     if ($("#rvGo")) $("#rvGo").onclick = () => quiz($("#rvQ"), due.map((w) => ({ ko: w.ko, en: w.en, _ref: w })), { kind: "review", onDone: () => render() });
     body.querySelectorAll("[data-delw]").forEach((b) => (b.onclick = () => { S.wrong = S.wrong.filter((w) => w.id !== b.dataset.delw); save(); renderVault(v); }));
     $("#rvAddGo").onclick = () => reviewAddCheck(v);
+    $("#rvAddIn").oninput = (e) => { if (!e.target.value.trim()) rvAddCtx = null; };   // 다 지우고 새로 쓰면 일반 문장으로 검토
   } else if (vaultMode === "saved") {
     const list = f(S.saved, ["en", "ko", "src"]);
     body.innerHTML = list.length ? `<div class="row spread small muted" style="margin:0 2px"><span>${list.length}문장</span><span class="row" style="gap:6px"><button class="btn sm" id="svDict">🎧 받아쓰기</button><button class="btn sm" id="svQuiz">퀴즈</button></span></div><div id="svQ"></div><div class="card">${list.map((s) => `<div class="item"><div class="en">${tappable(s.en, s.key)}</div><div class="ko">${esc(s.ko)}</div>${s.keyKo ? `<div class="keybox"><b>${esc(s.key)}</b> — ${esc(s.keyKo)} ${ygBtn(s.key)}</div>` : ""}<div class="acts">${sayBtns(s.en)}<span class="small muted" style="margin-left:auto">${esc(s.src || "")}</span><button class="act" data-dels="${s.id}">삭제</button></div></div>`).join("")}</div>`
@@ -1806,6 +1822,13 @@ $("#loginForm").onsubmit = (e) => {
   if (!/^[A-Za-z0-9가-힣_-]{4,24}$/.test(c)) { toast("코드는 4~24자 (영문·숫자·한글·-_)"); return; }
   login(c);
 };
+// 데일리 브리프 '영어로 익히기'에서 보낸 문장(?add=…&from=news&ko=…): 로그인 뒤 복습 '직접 추가'에 채워 바로 검토
+(() => {
+  const q = new URLSearchParams(location.search), add = (q.get("add") || "").trim();
+  if (!add) return;
+  try { sessionStorage.setItem("et:pendingAdd", JSON.stringify({ text: add.slice(0, 600), from: (q.get("from") || "").slice(0, 20), ko: (q.get("ko") || "").slice(0, 200) })); } catch {}
+  history.replaceState(null, "", location.pathname + "#vault");
+})();
 const remembered = lsGet("et:code");
 if (remembered) login(remembered); else { $("#login").hidden = false; $("#codeInput").focus(); }
 })();

@@ -111,9 +111,10 @@ ${target ? "The learner is practising: " + target + ". The \"natural\" version M
 Judge whether the learner's sentence is correct, natural spoken English that conveys the Korean meaning (other natural wordings are fine).
 JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of the learner's sentence (same if fine)","natural":"how a native would say it","why":"Korean explanation of the main problems or praise (1-3 sentences)","points":["short Korean grammar/expression points (max 3)"],"types":[up to 3 of exactly these labels for the learner's mistakes, empty array if none: "관사","시제","전치사","어순","어휘 선택","수 일치","구어체 표현","기타"]}`,
 
-  review_add: ({ text }) => `A Korean adult learner living in Auckland wants to add these English sentences (one per line) to their spaced-repetition review list:
+  review_add: ({ text, ctx, hint }) => `A Korean adult learner living in Auckland wants to add these English sentences (one per line) to their spaced-repetition review list:
 ${text}
-For EACH non-empty line, in the same order, check it like a careful native-speaker English teacher:
+${ctx === "news" ? `These come from New Zealand NEWS HEADLINES${hint ? ` (Korean gist: "${hint}")` : ""}. Headline style (dropped articles/verbs, present tense for past events) is NOT a grammar error here: judge "grammar" leniently for headline style. "natural" must be ONE natural spoken sentence the learner could actually SAY to a friend about this news, keeping the key expression from the headline (e.g. headline "Petrol prices hit record high" → "Petrol prices have hit a record high."). "why" should explain the headline → spoken difference and the useful expression.
+` : ""}For EACH non-empty line, in the same order, check it like a careful native-speaker English teacher:
 - "grammar": true only if the sentence is grammatically correct as written (ignore missing final punctuation and capitalisation).
 - "score": 1-10, how natural it sounds to a native speaker in everyday speech (10 = exactly what a native would say).
 - "natural": how a native speaker would naturally say the SAME meaning (keep it close to the learner's wording; identical to the input if it is already natural, only fixing punctuation).

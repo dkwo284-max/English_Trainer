@@ -160,7 +160,7 @@ async function login(code) {
   if (cleaned || back) save();
   lsSet("et:s:" + CODE, JSON.stringify(S));
   $("#login").hidden = true; $("#app").hidden = false;
-  $("#codeLabel").textContent = CODE;
+  $("#codeLabel").textContent = maskCode(CODE);
   go(location.hash.slice(1) || "home");
   takePendingAdd();
 }
@@ -1360,6 +1360,8 @@ function weakPractice(type) {
 }
 
 // 홈
+// 옆 사람이 보지 않게 학습 코드는 앞 두 글자만 (코드 설정 시트에서는 전체)
+const maskCode = (c) => String(c || "").slice(0, 2) + "•".repeat(Math.max(2, String(c || "").length - 2));
 function renderHome(v) {
   const h = todayH(), due = dueItems().length, sc = todayScenario(), ws = todayWriting();
   const wg = weeklyGoals();
@@ -1370,15 +1372,24 @@ function renderHome(v) {
   const hour = +new Intl.DateTimeFormat("en-NZ", { hour: "numeric", hour12: false, timeZone: "Pacific/Auckland" }).format(new Date());
   const greet = hour < 12 ? "Morning! ☀️" : hour < 18 ? "Kia ora! 👋" : "Evening! 🌙";
   const totalSentences = Object.values(S.history).reduce((a, x) => a + (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0) + (x.mono || 0) * 6, 0);
+  const parts = [["speak", speakN / 12], ["mono", (h.mono || 0) ? 1 : 0], ["write", writeN / 10], ["train", Math.min(drillN / 10, 1)], ["vault", due ? 0 : 1]];
+  const todayPct = Math.round((parts.reduce((a, [, x]) => a + x, 0) / parts.length) * 100), nextGo = (parts.find(([, x]) => x < 1) || [""])[0];
+  // 아직 기록이 없는 통계 카드는 하나로 묶어 짧게 (기록이 생기면 각 카드로 나옴)
+  const empty = { week: !Object.keys(S.history).some((d) => d >= addDays(today(), -13)), review: !S.wrong.some((w) => !w.del), weak: !S.errors.some((e) => (e.d || "") >= addDays(today(), -30)),
+    speak: !Object.keys(S.speak).length, mono: !S.monoLog.length };
+  const EMPTY_NAME = { week: "주간 리포트", review: "복습 성과", weak: "내 약점 TOP 3", speak: "말하기 기록", mono: "독백 낭독 기록" };
+  const emptyKeys = Object.keys(empty).filter((k) => empty[k]);
+  const statCard = (k, html) => (empty[k] ? "" : html);
   v.innerHTML = `
-    <div class="hello"><h2>${greet}</h2><p class="muted" style="margin:2px 0 0">오늘도 짧게, 소리 내서. 코드 <b>${esc(CODE)}</b></p></div>
+    <div class="hello"><h2>${greet}</h2><p class="muted" style="margin:2px 0 0">오늘도 짧게, 소리 내서.</p></div>
     <div class="stats" style="margin-top:12px">
       <div class="stat"><b>🔥 ${streak()}</b><span>연속 학습일</span></div>
       <div class="stat"><b>${totalSentences}</b><span>누적 연습 문장</span></div>
       <button class="stat stat-link" data-go-saved aria-label="저장 문장 보기"><b>${S.saved.length}</b><span>저장 문장 ›</span></button>
     </div>
     <div class="card">
-      <div class="row spread"><h3>오늘의 할 일</h3><span class="small muted">${esc(today())}</span></div>
+      <div class="row spread"><h3>오늘의 할 일</h3><span class="small muted">${todayPct}% 완료</span></div>
+      <div class="dayprog" role="progressbar" aria-valuenow="${todayPct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${todayPct}%"></i></div>
       <div class="task" data-go="speak"><div class="ring" style="--p:${(speakN / 12) * 100}">${speakN}/12</div><div class="t"><b>스피킹 12문장</b><span>${esc(sc.title)}</span></div>›</div>
       <div class="task" data-go="mono"><div class="ring" style="--p:${(h.mono || 0) ? 100 : 0}">${(h.mono || 0) ? "✓" : "0/1"}</div><div class="t"><b>독백 낭독 1개</b><span>${esc(todayMono()?.title || "")} · 30~60초 소리 내 읽기${monoStreak() ? ` · 🔥${monoStreak()}일째` : ""}</span></div>›</div>
       <div class="task" data-go="write"><div class="ring" style="--p:${(writeN / 10) * 100}">${writeN}/10</div><div class="t"><b>영작 10문장</b><span>${esc(ws.title)}</span></div>›</div>
@@ -1393,12 +1404,13 @@ function renderHome(v) {
         <div class="goal"><div class="ring" style="--p:${due ? 0 : 100}">${due}</div><span>복습 0개 유지</span></div>
       </div>
     </div>
-    <div class="card"><div class="row spread"><h3>주간 리포트</h3><span class="small muted">${esc(addDays(today(), -6).slice(5).replace("-", "/"))}~${esc(today().slice(5).replace("-", "/"))}</span></div>${weeklyReportHtml()}</div>
-    <div class="card"><div class="row spread"><h3>복습 성과</h3><button class="btn sm" data-go="vault">복습하기</button></div>${reviewStatsHtml()}</div>
-    <div class="card"><h3>내 약점 TOP 3</h3>${weaknessHtml()}</div>
-    <div class="card"><div class="row spread"><h3>이번 주 약점 맞춤 연습</h3><span class="small muted">매주 월요일 새로</span></div>${weeklyWeakHtml()}</div>
-    <div class="card"><div class="row spread"><h3>말하기 기록</h3><button class="btn sm" id="goSpeakRec">문장별 보기</button></div>${speakStatsHtml()}</div>
-    <div class="card"><div class="row spread"><h3>독백 낭독 기록</h3><button class="btn sm" data-go="mono">낭독하기</button></div>${monoStatsHtml()}</div>
+    ${statCard("week", `<div class="card"><div class="row spread"><h3>주간 리포트</h3><span class="small muted">${esc(addDays(today(), -6).slice(5).replace("-", "/"))}~${esc(today().slice(5).replace("-", "/"))}</span></div>${weeklyReportHtml()}</div>`)}
+    ${statCard("review", `<div class="card"><div class="row spread"><h3>복습 성과</h3><button class="btn sm" data-go="vault">복습하기</button></div>${reviewStatsHtml()}</div>`)}
+    ${statCard("weak", `<div class="card"><h3>내 약점 TOP 3</h3>${weaknessHtml()}</div><div class="card"><div class="row spread"><h3>이번 주 약점 맞춤 연습</h3><span class="small muted">매주 월요일 새로</span></div>${weeklyWeakHtml()}</div>`)}
+    ${statCard("speak", `<div class="card"><div class="row spread"><h3>말하기 기록</h3><button class="btn sm" id="goSpeakRec">문장별 보기</button></div>${speakStatsHtml()}</div>`)}
+    ${statCard("mono", `<div class="card"><div class="row spread"><h3>독백 낭독 기록</h3><button class="btn sm" data-go="mono">낭독하기</button></div>${monoStatsHtml()}</div>`)}
+    ${emptyKeys.length ? `<div class="card soon-card"><h3>📈 연습하면 여기에 쌓여요</h3><div class="chips" style="margin-top:6px">${emptyKeys.map((k) => `<span class="chip ghost">${EMPTY_NAME[k]}</span>`).join("")}</div>
+      <p class="small muted" style="margin:6px 0 0">스피킹·영작·독백을 하면 진행 그래프, 복습 정답률, 자주 틀리는 유형이 하나씩 열려요.</p></div>` : ""}
     <div class="card"><h3>학습 달력 <small class="muted">최근 12주</small></h3>${heatmapHtml()}</div>
     <div class="card">
       <h3>이 말, 영어로 뭐라고 하지?</h3>
@@ -1406,6 +1418,7 @@ function renderHome(v) {
       <div class="row"><input class="text" id="qConv" placeholder="예: 우리 애가 오늘 좀 피곤해 보여요"><button class="btn primary" id="qConvGo">변환</button></div>
     </div>`;
   v.querySelectorAll("[data-go]").forEach((t) => (t.onclick = () => go(t.dataset.go)));
+  { const nx = nextGo && v.querySelector(`.task[data-go="${nextGo}"]`); if (nx) { nx.classList.add("next"); nx.querySelector(".t b").insertAdjacentHTML("beforeend", ' <span class="nexttag">다음</span>'); } }
   v.querySelectorAll("[data-weak]").forEach((b) => (b.onclick = () => weakPractice(b.dataset.weak)));
   if ($("#wkSetGo")) $("#wkSetGo").onclick = () => runWeeklyWeak(v);
   const gsr = $("#goSpeakRec"); if (gsr) gsr.onclick = () => { vaultMode = "speakrec"; go("vault"); };

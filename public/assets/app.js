@@ -166,7 +166,25 @@ function streak() {
   while (any(d)) { n++; d = addDays(d, -1); }
   return n;
 }
-const dueItems = () => S.wrong.filter((w) => !w.del && w.due <= today());
+// ── 복습 엔진: 약점 우선 + 잘 아는 문장은 간격을 늘림 + 하루 상한 ──
+const REVIEW_DAILY_CAP = 20;
+/** 문장별 기록(예전 문장은 단계·횟수로 추정): 시도·정답·오답·연속 정답 */
+function rvStats(w) {
+  const reps = w.reps || 0;
+  const okc = w.okc ?? Math.min(reps, w.box || 0);
+  const miss = w.miss ?? Math.max(w.manual ? 0 : 1, reps - okc + (w.manual ? 0 : 1));
+  return { reps, okc, miss, streak: w.streak ?? (w.box || 0), acc: reps ? Math.round((okc / reps) * 100) : null };
+}
+/** 오늘 복습 순서 점수: 자주 틀린 문장 → 아직 한 번도 복습 안 한 문장 → 오래 안 본 문장 */
+function rvPriority(w) {
+  const st = rvStats(w), overdue = Math.max(0, dayNum(today()) - dayNum(w.due || today()));
+  const oftenWrong = st.miss >= 2 && st.miss > st.okc;
+  return (oftenWrong ? 100 : 0) + (st.reps === 0 ? 60 : 0) + Math.min(overdue, 30) + st.miss * 3 - st.okc - st.streak * 2 + (w.lastOk === false ? 10 : 0);
+}
+const allDue = () => S.wrong.filter((w) => !w.del && !w.mastered && w.due <= today()).sort((a, b) => rvPriority(b) - rvPriority(a));
+const reviewLeftToday = () => Math.max(0, REVIEW_DAILY_CAP - (todayH().review || 0));
+/** 오늘 복습할 문장(우선순위 순, 하루 상한까지). 밀린 건 내일로 */
+const dueItems = () => allDue().slice(0, reviewLeftToday());
 
 function addWrong(it, mine, res) {
   const key = norm(it.en);
@@ -176,13 +194,77 @@ function addWrong(it, mine, res) {
   Object.assign(w, { mine, why: res?.why || "", natural: res?.natural || "", types: Array.isArray(res?.types) ? res.types : (w.types || []), box: 0, due: addDays(today(), 1), upd: now });
   save();
 }
+/** 직접 넣은 영어 문장을 복습 목록에 추가(이미 있으면 기록은 두고 뜻·해설만 갱신) */
+function addManualReview(it, useNatural) {
+  const en = String(useNatural ? it.natural : it.en).trim(), key = norm(en);
+  if (!key) return false;
+  const now = new Date().toISOString();
+  let w = S.wrong.find((x) => !x.del && norm(x.en) === key);
+  const ko = useNatural && it.naturalKo ? it.naturalKo : it.ko;
+  if (w) { Object.assign(w, { ko: ko || w.ko, upd: now }); save(); return "dup"; }
+  w = { id: uid(), ko, en, src: "직접 추가", reps: 0, okc: 0, miss: 0, streak: 0, manual: true, at: now, upd: now, box: 0, due: today(),
+    mine: useNatural && norm(it.en) !== key ? it.en : "", why: it.why || "", natural: it.natural || "", types: Array.isArray(it.types) ? it.types : [] };
+  S.wrong.unshift(w); save(); return true;
+}
+async function reviewAddCheck(v) {
+  const lines = $("#rvAddIn").value.split(/\n+/).map((x) => x.trim()).filter((x) => /[A-Za-z]/.test(x));
+  const msg = $("#rvAddMsg"), out = $("#rvAddOut"), btn = $("#rvAddGo");
+  if (!lines.length) return toast("영어 문장을 한 줄에 하나씩 넣어 주세요");
+  if (lines.length > 10) toast("한 번에 10문장까지만 검토해요. 앞의 10문장만 볼게요");
+  const pick = lines.slice(0, 10);
+  btn.disabled = true; msg.innerHTML = `<span class="spinner"></span> ${pick.length}문장 검토 중…`; out.innerHTML = "";
+  try {
+    const r = await ai("review_add", { text: pick.map((x, i) => `${i + 1}. ${x}`).join("\n") });
+    const items = (r.items || []).filter((x) => x && x.en && x.ko).slice(0, pick.length);
+    if (!items.length) throw new Error("검토 결과가 비었어요. 다시 눌러 주세요");
+    msg.textContent = `${items.length}문장 검토 완료`;
+    renderReviewAdd(v, items);
+  } catch (e) { msg.textContent = ""; toast(e.message); }
+  finally { btn.disabled = false; }
+}
+function renderReviewAdd(v, items) {
+  const out = $("#rvAddOut");
+  const same = (it) => norm(it.natural) === norm(it.en);
+  // 문법이 틀리면 고친 문장이 기본, 문법은 맞는데 어색하면(6점 이하) 고친 문장 추천, 아니면 내 문장 그대로
+  const pref = (it) => (!same(it) && (it.grammar === false || (+it.score || 10) <= 6) ? "fix" : "mine");
+  out.innerHTML = items.map((it, i) => {
+    const sc = Math.max(1, Math.min(10, Math.round(+it.score || 0))) || null, p = pref(it), isSame = same(it);
+    return `<div class="item rvadd" data-i="${i}">
+      <div class="en">${esc(it.en)}</div><div class="ko">${esc(it.ko)}</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin:6px 0">
+        <span class="rvtag ${it.grammar === false ? "bad" : "good"}">${it.grammar === false ? "문법 ✗" : "문법 ✓"}</span>
+        ${sc ? `<span class="rvtag ${sc >= 8 ? "good" : sc >= 6 ? "new" : "bad"}">자연스러움 ${sc}/10</span>` : ""}</div>
+      ${it.grammar === false && it.grammarNote ? `<div class="small">📝 ${esc(it.grammarNote)}</div>` : ""}
+      ${!isSame ? `<div class="keybox"><b>원어민이라면</b> ${esc(it.natural)} ${sayBtns(it.natural)}${it.naturalKo ? `<div class="small muted">${esc(it.naturalKo)}</div>` : ""}</div>` : ""}
+      ${it.why ? `<div class="small muted">${esc(it.why)}</div>` : ""}
+      <div class="acts" data-acts="${i}">${isSame ? `<button class="btn sm primary" data-add="mine">복습에 추가</button>`
+        : `<button class="btn sm ${p === "mine" ? "primary" : ""}" data-add="mine">내 문장 그대로 추가</button><button class="btn sm ${p === "fix" ? "primary" : ""}" data-add="fix">고친 문장으로 추가${p === "fix" ? " (추천)" : ""}</button>`}</div></div>`;
+  }).join("") + (items.length > 1 ? `<button class="btn primary big" id="rvAddAll" style="margin-top:8px">추천대로 모두 추가 (${items.length})</button>` : "");
+  const done = (i, res, useFix) => {
+    const box = out.querySelector(`[data-acts="${i}"]`); if (!box) return;
+    box.innerHTML = `<span class="small" style="color:var(--good)">${res === "dup" ? "이미 복습 목록에 있어요 (뜻만 갱신)" : `✓ ${useFix ? "고친 문장" : "내 문장"}으로 추가됨 · 오늘 복습에 나와요`}</span>`;
+    box.dataset.done = "1";
+  };
+  out.querySelectorAll("[data-add]").forEach((b) => (b.onclick = () => {
+    const i = +b.closest("[data-i]").dataset.i, fix = b.dataset.add === "fix";
+    done(i, addManualReview(items[i], fix), fix); afterAdd();
+  }));
+  const afterAdd = () => { if ([...out.querySelectorAll("[data-acts]")].every((x) => x.dataset.done)) { $("#rvAddIn").value = ""; const a = $("#rvAddAll"); if (a) a.remove(); toast("복습 목록에 추가했어요"); setTimeout(() => renderVault(v), 1200); } };
+  if ($("#rvAddAll")) $("#rvAddAll").onclick = () => { items.forEach((it, i) => { if (!out.querySelector(`[data-acts="${i}"]`)?.dataset.done) { const fix = pref(it) === "fix"; done(i, addManualReview(it, fix), fix); } }); afterAdd(); };
+}
 function reviewResult(w, ok) {
-  w.reps = (w.reps || 0) + 1;
+  const st = rvStats(w);   // 예전 문장은 여기서 처음으로 실제 기록 필드를 갖게 된다
+  w.reps = st.reps + 1; w.okc = st.okc + (ok ? 1 : 0); w.miss = st.miss + (ok ? 0 : 1);
+  w.streak = ok ? st.streak + 1 : 0; w.lastOk = ok; w.last = today();
   w.box = ok ? Math.min((w.box || 0) + 1, SRS.length) : 0;
   w.upd = new Date().toISOString();
-  if (ok) { const n = norm(w.en); for (const [id, e] of Object.entries(S.expr)) if (id && n.includes(id) && !e.passed) e.passed = today(); }
+  if (ok) { const n = norm(w.en); for (const [id, e] of Object.entries(S.expr)) if (id && n.includes(id) && !e.passed) e.passed = today(); log("review_ok"); }
   if (ok && w.box >= SRS.length) { w.mastered = true; w.due = "9999-12-31"; log("mastered"); }
-  else w.due = addDays(today(), ok ? SRS[w.box - 1] || 1 : 1);
+  else {
+    // 연속으로 맞출수록 다음 간격을 늘림(3번 연속 정답이면 2배, 최대 120일), 틀리면 처음(내일)부터
+    const base = ok ? SRS[w.box - 1] || 1 : 1;
+    w.due = addDays(today(), ok && w.streak >= 3 ? Math.min(base * 2, 120) : base);
+  }
   save();
 }
 function saveSentence(x) {
@@ -1470,12 +1552,25 @@ function renderVault(v) {
   const body = $("#vBody");
   if (vaultMode === "due") {
     const waiting = S.wrong.filter((w) => !w.del && !w.mastered && w.due > today()).sort((a, b) => a.due.localeCompare(b.due));
-    const mastered = S.wrong.filter((w) => w.mastered).length;
-    body.innerHTML = `<div class="card">${due.length ? `<div class="row spread"><h3>오늘 복습 ${due.length}문장</h3><span class="small muted">1·3·7·14·30·60일 간격</span></div><div id="rvQ" style="margin-top:10px"><button class="btn primary big" id="rvGo">복습 시작</button></div>`
-      : `<div class="empty">🎉 오늘 복습할 문장이 없어요.<br><span class="small">영작·퀴즈에서 틀린 문장이 여기로 자동으로 들어와요.</span></div>`}</div>
-      ${waiting.length ? `<div class="card"><div class="row spread"><h3>대기 중 ${waiting.length}</h3><span class="small muted">완전히 익힘 ${mastered}</span></div>${waiting.slice(0, 40).map((w) => `<div class="item"><div class="row spread"><span class="small muted">${esc(w.due)} 복습 · ${w.box || 0}단계</span><button class="act" data-delw="${w.id}">삭제</button></div><div class="ko" style="color:var(--text)">${esc(w.ko)}</div><div class="en">${esc(w.en)}</div>${w.mine ? `<div class="small muted">내 답: ${esc(w.mine)}</div>` : ""}</div>`).join("")}</div>` : ""}`;
+    const mastered = S.wrong.filter((w) => w.mastered).length, total = allDue().length, doneToday = todayH().review || 0;
+    const pushed = Math.max(0, total - due.length);
+    const tag = (w) => { const st = rvStats(w); return st.reps === 0 ? `<span class="rvtag new">처음</span>` : st.miss >= 2 && st.miss > st.okc ? `<span class="rvtag bad">자주 틀림</span>` : st.streak >= 3 ? `<span class="rvtag good">연속 ${st.streak}번 정답</span>` : ""; };
+    const accTxt = (w) => { const st = rvStats(w); return st.acc == null ? "아직 복습 전" : `정답률 ${st.acc}% (${st.okc}/${st.reps})`; };
+    body.innerHTML = `<div class="card">${due.length ? `<div class="row spread"><h3>오늘 복습 ${due.length}문장</h3><span class="small muted">하루 최대 ${REVIEW_DAILY_CAP}문장</span></div>
+        <p class="small muted" style="margin:4px 0 0">자주 틀린 문장 → 처음 보는 문장 → 오래 안 본 문장 순서로 나와요.${pushed ? ` 나머지 <b>${pushed}</b>문장은 내일 이후로 밀려요.` : ""}</p>
+        <div class="rvlist">${due.slice(0, 5).map((w) => `<div class="small">${tag(w)} ${esc(w.ko)}</div>`).join("")}${due.length > 5 ? `<div class="small muted">… 외 ${due.length - 5}문장</div>` : ""}</div>
+        <div id="rvQ" style="margin-top:10px"><button class="btn primary big" id="rvGo">복습 시작</button></div>`
+      : total ? `<div class="empty">✅ 오늘 복습 ${doneToday}문장 완료! (하루 최대 ${REVIEW_DAILY_CAP})<br><span class="small">남은 ${total}문장은 내일 이어서 나와요.</span></div>`
+      : `<div class="empty">🎉 오늘 복습할 문장이 없어요.<br><span class="small">영작·퀴즈에서 틀린 문장이나 아래에서 직접 넣은 문장이 여기로 들어와요.</span></div>`}</div>
+      <div class="card"><details id="rvAddBox"${S.wrong.length ? "" : " open"}><summary><b>＋ 복습 문장 직접 추가</b> <span class="small muted">따로 훈련하고 싶은 영어 문장</span></summary>
+        <p class="small muted" style="margin:8px 0 6px">한 줄에 한 문장씩, 최대 10문장. AI가 뜻·문법·원어민 자연스러움을 검토한 뒤 고를 수 있게 보여 드려요.</p>
+        <textarea class="text" id="rvAddIn" rows="4" placeholder="e.g. I'm keen to catch up sometime next week.&#10;Could you give me a hand with this?"></textarea>
+        <div class="row" style="gap:6px;margin-top:6px"><button class="btn primary" id="rvAddGo">검토하기</button><span class="small muted" id="rvAddMsg"></span></div>
+        <div id="rvAddOut"></div></details></div>
+      ${waiting.length ? `<div class="card"><div class="row spread"><h3>대기 중 ${waiting.length}</h3><span class="small muted">완전히 익힘 ${mastered}</span></div>${waiting.slice(0, 40).map((w) => `<div class="item"><div class="row spread"><span class="small muted">${esc(w.due)} 복습 · ${accTxt(w)} ${tag(w)}</span><button class="act" data-delw="${w.id}">삭제</button></div><div class="ko" style="color:var(--text)">${esc(w.ko)}</div><div class="en">${esc(w.en)}</div>${w.mine ? `<div class="small muted">${w.manual ? "처음 쓴 문장" : "내 답"}: ${esc(w.mine)}</div>` : ""}</div>`).join("")}</div>` : ""}`;
     if ($("#rvGo")) $("#rvGo").onclick = () => quiz($("#rvQ"), due.map((w) => ({ ko: w.ko, en: w.en, _ref: w })), { kind: "review", onDone: () => render() });
     body.querySelectorAll("[data-delw]").forEach((b) => (b.onclick = () => { S.wrong = S.wrong.filter((w) => w.id !== b.dataset.delw); save(); renderVault(v); }));
+    $("#rvAddGo").onclick = () => reviewAddCheck(v);
   } else if (vaultMode === "saved") {
     const list = f(S.saved, ["en", "ko", "src"]);
     body.innerHTML = list.length ? `<div class="row spread small muted" style="margin:0 2px"><span>${list.length}문장</span><span class="row" style="gap:6px"><button class="btn sm" id="svDict">🎧 받아쓰기</button><button class="btn sm" id="svQuiz">퀴즈</button></span></div><div id="svQ"></div><div class="card">${list.map((s) => `<div class="item"><div class="en">${tappable(s.en, s.key)}</div><div class="ko">${esc(s.ko)}</div>${s.keyKo ? `<div class="keybox"><b>${esc(s.key)}</b> — ${esc(s.keyKo)} ${ygBtn(s.key)}</div>` : ""}<div class="acts">${sayBtns(s.en)}<span class="small muted" style="margin-left:auto">${esc(s.src || "")}</span><button class="act" data-dels="${s.id}">삭제</button></div></div>`).join("")}</div>`

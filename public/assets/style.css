@@ -281,3 +281,14 @@ html, body { overflow-x: hidden; }
 .mans-btn { display: block; width: 100%; padding: 10px 12px; border: 1px dashed var(--accent); border-radius: 12px; background: var(--accent-soft); color: var(--accent); font: inherit; font-weight: 700; cursor: pointer; text-align: center; }
 .mans { padding: 8px 10px; border-radius: 12px; background: var(--b-bubble); }
 .mans .en { margin: 0; font-size: 19px; line-height: 1.7; }
+/* 복습: 상태 꼬리표·오늘 목록 미리보기·직접 추가 */
+.rvtag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); vertical-align: 1px; }
+.rvtag.bad { background: var(--bad-soft); color: var(--bad); }
+.rvtag.good { background: var(--good-soft); color: var(--good); }
+.rvtag.new { background: var(--accent-soft); color: var(--accent); }
+.rvlist { display: grid; gap: 4px; margin-top: 8px; }
+#rvAddBox summary { cursor: pointer; list-style: none; }
+#rvAddBox summary::-webkit-details-marker { display: none; }
+#rvAddBox summary::before { content: "▸ "; color: var(--muted); }
+#rvAddBox[open] summary::before { content: "▾ "; }
+.rvadd .acts { gap: 6px; flex-wrap: wrap; margin-top: 8px; }

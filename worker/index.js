@@ -8,7 +8,7 @@
 // 빠른 작업(단어·변환·교정)은 Flash-Lite 먼저, 긴 생성(대화·영작 세트)은 Flash 먼저. 생각(thinking) 토큰은 꺼서 지연을 줄임
 const FAST = ["gemini-flash-lite-latest", "gemini-flash-latest"];
 const SLOW = ["gemini-flash-latest", "gemini-flash-lite-latest"];
-const FAST_TASKS = new Set(["word", "naturalize", "correct", "drill"]);
+const FAST_TASKS = new Set(["word", "naturalize", "correct", "drill", "review_add"]);
 const AI_PER_CODE_PER_DAY = 80;   // 코드 하나가 하루에 쓸 수 있는 AI 호출
 const AI_TOTAL_PER_DAY = 400;     // 앱 전체 하루 상한 (무료 등급 보호)
 const MAX_STATE_BYTES = 900_000;
@@ -110,6 +110,15 @@ JSON: {"best":"most natural spoken version","casual":"more casual/Kiwi version",
 ${target ? "The learner is practising: " + target + ". The \"natural\" version MUST keep this same structure/tense (do not rephrase into a different sentence pattern or tense).\n" : ""}${context ? "Dialogue so far:\n" + context + "\n" : ""}${answer ? 'Reference answer: "' + answer + '"\n' : ""}Learner's English: "${mine}"
 Judge whether the learner's sentence is correct, natural spoken English that conveys the Korean meaning (other natural wordings are fine).
 JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of the learner's sentence (same if fine)","natural":"how a native would say it","why":"Korean explanation of the main problems or praise (1-3 sentences)","points":["short Korean grammar/expression points (max 3)"],"types":[up to 3 of exactly these labels for the learner's mistakes, empty array if none: "관사","시제","전치사","어순","어휘 선택","수 일치","구어체 표현","기타"]}`,
+
+  review_add: ({ text }) => `A Korean adult learner living in Auckland wants to add these English sentences (one per line) to their spaced-repetition review list:
+${text}
+For EACH non-empty line, in the same order, check it like a careful native-speaker English teacher:
+- "grammar": true only if the sentence is grammatically correct as written (ignore missing final punctuation and capitalisation).
+- "score": 1-10, how natural it sounds to a native speaker in everyday speech (10 = exactly what a native would say).
+- "natural": how a native speaker would naturally say the SAME meaning (keep it close to the learner's wording; identical to the input if it is already natural, only fixing punctuation).
+- "ko": natural, fluent Korean meaning of the sentence (구어 해요체), not translation-ese.
+JSON: {"items":[{"en":"the learner's sentence exactly as given","ko":"...","grammar":true,"grammarNote":"Korean: the grammar problem in one sentence, empty if correct","score":8,"natural":"...","naturalKo":"Korean meaning of natural if it differs in nuance, else empty","why":"1-2 short Korean sentences on what makes it (un)natural or what changed","types":[up to 3 of exactly these labels for the learner's mistakes, empty array if none: "관사","시제","전치사","어순","어휘 선택","수 일치","구어체 표현","기타"]}]}`,
 
   word: ({ word }) => `Explain the English word or phrase "${word}" for a Korean adult learner living in Auckland.
 Rules:
@@ -222,6 +231,7 @@ const VALID = {
   word: (r) => r && typeof r.ko === "string" && r.ko,
   naturalize: (r) => r && typeof r.best === "string" && r.best,
   correct: (r) => r && typeof r.score === "number",
+  review_add: (r) => r && Array.isArray(r.items) && r.items.length && r.items.every((i) => i && i.en && i.ko && i.natural),
   drill: (r) => r && Array.isArray(r.items) && r.items.length,
   dialogue: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en).length >= 6,
   writing: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en && l.ko).length >= 5,

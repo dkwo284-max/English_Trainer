@@ -320,3 +320,10 @@ html, body { overflow-x: hidden; }
 .soon-card { background: transparent; border-style: dashed; box-shadow: none; }
 .chip.ghost { background: var(--surface-2); color: var(--muted); cursor: default; }
 .task .t .nexttag { display: inline-block; color: #fff; font-size: 11px; margin: 0; }
+
+/* 🆘 역할극 모범답안(쉐도잉) */
+.help-open { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.rphelp { margin-top: 8px; padding: 9px 10px; border-radius: 12px; background: var(--surface); border: 1px dashed var(--accent); }
+.rphelp .en { font-size: 17px; line-height: 1.5; margin: 4px 0 2px; font-weight: 600; }
+.rphelp .blurred { filter: blur(7px); user-select: none; pointer-events: none; transition: filter .2s; }
+.rphelp .acts { gap: 4px; flex-wrap: wrap; margin-top: 4px; }

@@ -849,19 +849,31 @@ function startRoleplay(sc, custom) {
   const hist = () => rp.lines.map((l) => `${l.sp}: ${l.en}`).join("\n");
   const draw = () => {
     log.innerHTML = rp.lines.map((l, i) => l.sp === "B"
-      ? `<div class="rpb"><div class="en">${tappable(l.en)}</div><div class="ko small muted">${esc(l.ko || "")}</div><div class="acts">${sayBtns(l.en)}${l.hint && i === rp.lines.length - 1 && !rp.done ? `<span class="small muted">💡 ${esc(l.hint)}…</span>` : ""}</div></div>`
-      : `<div class="rpa"><div class="en">${esc(l.en)}</div>${l.fix ? (l.fix.ok ? `<div class="small" style="color:var(--good)">✓ ${esc(l.fix.why || "자연스러워요")}</div>` : `<div class="keybox"><b>이렇게 말하면</b> ${esc(l.fix.better)} ${sayBtns(l.fix.better)}<div class="small muted">${esc(l.fix.why || "")}</div></div>`) : ""}</div>`).join("");
+      ? `<div class="rpb"><div class="en">${tappable(l.en)}</div><div class="ko small muted">${esc(l.ko || "")}</div><div class="acts">${sayBtns(l.en)}${l.hint && i === rp.lines.length - 1 && !rp.done ? `<span class="small muted">💡 ${esc(l.hint)}…</span>` : ""}</div>${i === rp.lines.length - 1 && !rp.done ? helpHtml(l) : ""}</div>`
+      : `<div class="rpa"><div class="en">${esc(l.en)}</div>${l.assist ? `<div class="small muted">🆘 모범답안${l.assist === "said" ? "을 따라 말했어요" : "으로 답했어요"}</div>` : ""}${l.fix ? (l.fix.ok ? `<div class="small" style="color:var(--good)">✓ ${esc(l.fix.why || "자연스러워요")}</div>` : `<div class="keybox"><b>이렇게 말하면</b> ${esc(l.fix.better)} ${sayBtns(l.fix.better)}<div class="small muted">${esc(l.fix.why || "")}</div></div>`) : ""}</div>`).join("");
     log.scrollTop = log.scrollHeight;
   };
-  const step = async (mine) => {
+  // 🆘 막혔을 때: 모범답안 → 듣기 → (글자 가리고) 따라 말하기 → 이 답으로 이어가기
+  const helpHtml = (l) => {
+    if (!l.model) return "";
+    if (!rp.help) return `<div class="acts" style="margin-top:6px"><button class="act help-open" data-help="open">🆘 말이 안 나와요 · 모범답안 보기</button></div>`;
+    return `<div class="rphelp"><div class="small muted">🆘 이렇게 말해 보세요 — 먼저 듣고, 따라 해 보세요</div>
+      <div class="en ${rp.hide ? "blurred" : ""}" id="rpModel">${tappable(l.model)}</div>
+      <div class="ko small muted ${rp.hide ? "blurred" : ""}">${esc(l.modelKo || "")}</div>
+      <div class="acts">${sayBtns(l.model)}<button class="act ${rp.hide ? "on" : ""}" data-help="hide">🙈 글자 가리기</button></div>
+      <div class="row" style="gap:6px;margin-top:6px"><button class="btn primary" data-help="shadow" style="flex:1">🎙 따라 말하기</button><button class="btn" data-help="use">이 답으로 이어가기 ›</button></div>
+      <div id="rpHelpOut" class="small" style="margin-top:6px">${rp.helpRes || ""}</div></div>`;
+  };
+  const step = async (mine, assist, assistKo) => {
     if (rp.busy) return; rp.busy = true;
     $("#rpMic").disabled = true;
-    if (mine) { rp.lines.push({ sp: "A", en: mine }); rp.turns++; draw(); }
+    rp.help = false; rp.hide = false; rp.helpRes = "";
+    if (mine) { rp.lines.push({ sp: "A", en: mine, assist: assist || "", ko: assistKo || "" }); rp.turns++; draw(); }
     out.innerHTML = '<span class="spinner"></span> 상대가 생각 중…';
     try {
       const r = await ai("roleplay", { scenario: rp.scenario, roles: rp.roles, history: hist().split("\n").slice(0, mine ? -1 : undefined).join("\n"), mine: mine || "" }, { fresh: true });
       if (mine && r.fix) rp.lines[rp.lines.length - 1].fix = r.fix;
-      rp.lines.push({ sp: "B", en: r.reply, ko: r.ko, hint: r.hint });
+      rp.lines.push({ sp: "B", en: r.reply, ko: r.ko, hint: r.hint, model: String(r.model || "").trim(), modelKo: r.modelKo || "" });
       rp.done = !!r.done || rp.turns >= RP_MAX_TURNS;
       draw(); out.textContent = "";
       await speak(r.reply, S.settings.accent === "en-US" ? "en-GB" : undefined);
@@ -872,14 +884,39 @@ function startRoleplay(sc, custom) {
   const finish = () => {
     rp.done = true; log_("roleplay");
     const fixes = rp.lines.filter((l) => l.sp === "A" && l.fix && !l.fix.ok && l.fix.better);
-    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> 내가 말한 ${rp.turns}문장 중 ${rp.turns - fixes.length}문장이 자연스러웠어요.${fixes.length ? `<div class="small muted" style="margin:4px 0">고친 문장 ${fixes.length}개를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">고친 문장 ${fixes.length}개 복습에 추가</button>` : ""}</div>`;
+    // 모범답안을 쓴 문장은 내 실력이 아니므로 '자연스러웠어요' 집계에서 빼고, 복습에는 따로 넣을 수 있게 함
+    const helped = rp.lines.filter((l) => l.sp === "A" && l.assist);
+    const own = rp.lines.filter((l) => l.sp === "A" && !l.assist), ownFix = fixes.filter((l) => !l.assist);
+    const nSave = ownFix.length + helped.length;
+    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 모범답안을 따라 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
     $("#rpMic").disabled = true;
     if ($("#rpSave")) $("#rpSave").onclick = () => {
       let n = 0;
-      for (const l of fixes) if (addManualReview({ en: l.fix.better, ko: l.fix.betterKo || "", natural: l.fix.better, why: l.fix.why, types: [] }, false) === true) n++;
-      S.wrong.filter((w) => fixes.some((l) => norm(l.fix.better) === norm(w.en))).forEach((w) => { w.src = "역할극"; w.mine = w.mine || fixes.find((l) => norm(l.fix.better) === norm(w.en)).en; });
+      const fx = ownFix;
+      for (const l of fx) if (addManualReview({ en: l.fix.better, ko: l.fix.betterKo || "", natural: l.fix.better, why: l.fix.why, types: [] }, false) === true) n++;
+      for (const l of helped) if (addManualReview({ en: l.en, ko: l.ko || "", natural: l.en, why: "역할극에서 참고한 모범답안", types: [] }, false) === true) n++;
+      S.wrong.filter((w) => fx.some((l) => norm(l.fix.better) === norm(w.en))).forEach((w) => { w.src = "역할극"; w.mine = w.mine || fx.find((l) => norm(l.fix.better) === norm(w.en)).en; });
+      S.wrong.filter((w) => helped.some((l) => norm(l.en) === norm(w.en))).forEach((w) => { if (!w.mine) w.src = "역할극 모범답안"; });
       save(); $("#rpSave").disabled = true; $("#rpSave").textContent = `✓ ${n}개 추가됨`;
     };
+  };
+  log.onclick = async (e) => {
+    const b = e.target.closest("[data-help]"); if (!b || rp.busy || rp.done) return;
+    const last = rp.lines[rp.lines.length - 1], k = b.dataset.help;
+    if (!last || last.sp !== "B" || !last.model) return;
+    if (k === "open") { rp.help = true; draw(); speak(last.model); return; }
+    if (k === "hide") { rp.hide = !rp.hide; draw(); return; }
+    if (k === "use") { const said = rp.shadowed; rp.shadowed = false; step(last.model, said ? "said" : "model", last.modelKo); return; }
+    if (k === "shadow") {
+      const o = $("#rpHelpOut"); if (!o) return;
+      o.innerHTML = '<span class="spinner"></span> 말해 보세요…';
+      try {
+        const r = await hearSentence(last.model, o); if (!r) return;
+        rp.helpRes = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span> ${r.score >= 80 ? "잘했어요! 이제 ‘이 답으로 이어가기’를 눌러요." : "한 번 더 듣고 천천히 따라 해 보세요."}${hearHtml(r)}`;
+        if (r.score >= 80) { rp.shadowed = true; log_("shadow"); }   // 이 함수 안의 log 는 대화창 요소라 전역 log_ 를 씀
+        const o2 = $("#rpHelpOut"); if (o2) o2.innerHTML = rp.helpRes;
+      } catch (err) { o.textContent = err.message; }
+    }
   };
   $("#rpMic").onclick = async () => { if (rp.busy || rp.done) return; const t = await hearFree(out); if (t) { out.textContent = ""; step(t); } };
   $("#rpType").onclick = () => { $("#rpTypeBox").hidden = !$("#rpTypeBox").hidden; if (!$("#rpTypeBox").hidden) $("#rpIn").focus(); };

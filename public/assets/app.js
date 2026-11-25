@@ -359,10 +359,43 @@ function similarity(a, b) {
 }
 
 // ── AI ──────────────────────────────────────────────────
-async function ai(task, payload) {
-  const r = await api("/api/ai", { method: "POST", body: JSON.stringify({ task, ...payload }) });
-  if (!r.ok) throw new Error(r.data.error || "AI를 쓸 수 없어요");
-  return r.data.result;
+// ── AI 호출: 같은 질문은 기기에 저장해 둔 답을 바로 쓰고(한도 절약), 연결이 끊기거나 서버가 잠깐 바쁘면 자동으로 다시 시도 ──
+const AI_CACHE_TASKS = new Set(["naturalize", "correct", "review_add"]);   // 같은 입력이면 같은 답이 맞는 작업만(새로 만들기 작업은 제외, 단어 풀이는 따로 저장)
+const AI_CACHE_MAX = 300, AI_CACHE_DAYS = 60;
+const hashStr = (str) => { let h1 = 5381, h2 = 52711; for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = (h1 * 33) ^ c; h2 = (h2 * 33) ^ c; } return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36); };
+const aiCacheKey = (task, payload) => "et:aic:" + hashStr(task + "|" + JSON.stringify(payload, Object.keys(payload).sort()));
+function aiCacheGet(k) {
+  try { const x = JSON.parse(lsGet(k) || "null"); if (x && x.t > Date.now() - AI_CACHE_DAYS * 864e5) return x.r; } catch {}
+  return null;
+}
+function aiCachePut(k, r) {
+  lsSet(k, JSON.stringify({ t: Date.now(), r }));
+  let idx = []; try { idx = JSON.parse(lsGet("et:aic:idx") || "[]"); } catch {}
+  idx = [...idx.filter((x) => x !== k), k];
+  while (idx.length > AI_CACHE_MAX) { const old = idx.shift(); try { localStorage.removeItem(old); } catch {} }
+  lsSet("et:aic:idx", JSON.stringify(idx));
+}
+function waitOnline(maxMs = 30000) {
+  if (navigator.onLine !== false) return Promise.resolve(true);
+  toast("인터넷이 끊겼어요. 연결되면 자동으로 다시 시도할게요", 3500);
+  return new Promise((res) => { const t = setTimeout(() => { removeEventListener("online", on); res(false); }, maxMs); const on = () => { clearTimeout(t); res(true); }; addEventListener("online", on, { once: true }); });
+}
+async function ai(task, payload, opt = {}) {
+  const useCache = AI_CACHE_TASKS.has(task) && !opt.fresh && payload.engine !== "best";
+  const ck = useCache ? aiCacheKey(task, payload) : "";
+  if (ck) { const hit = aiCacheGet(ck); if (hit) return hit; }
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!(await waitOnline())) throw new Error("인터넷 연결이 없어요. 연결된 뒤 다시 눌러 주세요");
+    let r;
+    try { r = await api("/api/ai", { method: "POST", body: JSON.stringify({ task, ...payload }) }); }
+    catch (e) { lastErr = new Error("연결이 불안정해요. 다시 시도 중…"); await sleep(1000 * (attempt + 1) * 1.5); continue; }   // 네트워크 끊김
+    if (r.ok && r.data.result) { if (ck) aiCachePut(ck, r.data.result); return r.data.result; }
+    lastErr = new Error(r.data.error || "AI를 쓸 수 없어요");
+    if (r.status === 429 || (r.status >= 400 && r.status < 500)) break;   // 한도·잘못된 요청은 다시 해도 같음
+    if (attempt < 2) { if (attempt === 0) toast("AI가 잠깐 바빠요. 자동으로 다시 시도할게요"); await sleep(1500 * (attempt + 1)); }
+  }
+  throw lastErr;
 }
 
 // ── 공통 렌더 조각 ──────────────────────────────────────

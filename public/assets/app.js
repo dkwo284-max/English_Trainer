@@ -1066,6 +1066,39 @@ function reviewStatsHtml() {
   return `<div class="bars7">${bars.map((n, b) => bar(n, labels[b])).join("")}${bar(mastered, "익힘 ✓", "ok")}</div>
     <p class="small muted" style="margin:6px 0 0">간격 복습 단계별 문장 수 (아래 숫자 = 다음 복습까지 간격). 익힌 문장 <b>${mastered}</b>개${mastered ? " · 최근 30일 누적" : ""}</p>${line}`;
 }
+/** 최근 7일 학습 리포트(그 전 7일과 비교) */
+function weeklyReportHtml() {
+  const span = (from) => [...Array(7)].map((_, k) => addDays(today(), from + k));
+  const cur = span(-6), prev = span(-13);
+  const sentOf = (x) => (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0) + (x.shadow || 0) + (x.dictation || 0) + (x.mono || 0) * 6;
+  const sum = (days, f) => days.reduce((a, d) => a + f(S.history[d] || {}), 0);
+  const active = (days) => days.filter((d) => Object.values(S.history[d] || {}).some((v) => v > 0)).length;
+  const sc = sum(cur, sentOf), sp = sum(prev, sentOf), ac = active(cur);
+  if (!sc && !sp) return `<p class="small muted" style="margin:6px 0 0">이번 주에 연습을 시작하면 7일 단위로 얼마나 했는지, 복습 정답률과 자주 틀린 유형을 정리해 드려요.</p>`;
+  const okDays = cur.filter((d) => d >= "2026-11-25");   // 복습 정답 수(review_ok)는 이날부터 기록
+  const rv = sum(okDays, (x) => x.review || 0), rok = sum(okDays, (x) => x.review_ok || 0), mast = sum(cur, (x) => x.mastered || 0), mono = sum(cur, (x) => x.mono || 0);
+  const from = cur[0], newWrong = S.wrong.filter((w) => !w.del && (w.at || "").slice(0, 10) >= from);
+  const manual = newWrong.filter((w) => w.manual).length;
+  const cnt = {}; for (const e of S.errors) if ((e.d || "") >= from) cnt[e.t] = (cnt[e.t] || 0) + 1;
+  const topErr = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
+  const best = cur.reduce((a, d) => (sentOf(S.history[d] || {}) > sentOf(S.history[a] || {}) ? d : a), cur[0]);
+  const diff = sp ? Math.round(((sc - sp) / sp) * 100) : null;
+  const next7 = S.wrong.filter((w) => !w.del && !w.mastered && w.due <= addDays(today(), 7)).length;
+  const wd = (d) => ["일", "월", "화", "수", "목", "금", "토"][new Date(d + "T12:00:00Z").getUTCDay()];
+  const tips = [];
+  if (ac < 4) tips.push(`이번 주는 ${ac}일 공부했어요. 하루 10분이라도 <b>매일</b> 하면 말이 더 빨리 붙어요.`);
+  if (rv && rok / rv < 0.6) tips.push(`복습 정답률이 ${Math.round((rok / rv) * 100)}%예요. 틀린 문장은 🔊 듣고 소리 내 3번 따라 한 뒤 다시 써 보세요.`);
+  if (topErr) tips.push(`이번 주 가장 많이 틀린 유형은 <b>${esc(topErr[0])}</b>(${topErr[1]}회) — 홈의 '내 약점 TOP 3'에서 연습 5문장을 해 보세요.`);
+  if (!mono) tips.push("독백 낭독을 한 번도 안 했어요. 30초짜리 하나만 소리 내 읽어도 구어체 감각이 살아나요.");
+  if (next7 > 60) tips.push(`앞으로 7일 안에 복습할 문장이 ${next7}개예요. 하루 ${REVIEW_DAILY_CAP}문장씩 꾸준히 해야 밀리지 않아요.`);
+  if (!tips.length) tips.push("좋은 흐름이에요! 이번 주처럼만 이어 가면 돼요. 👍");
+  const stat = (b, t) => `<div class="stat"><b>${b}</b><span>${t}</span></div>`;
+  return `<div class="stats" style="grid-template-columns:repeat(3,1fr);margin-top:8px">
+      ${stat(`${ac}/7`, "공부한 날")}${stat(sc, `연습 문장${diff == null ? "" : `<br><small class="${diff >= 0 ? "up" : "down"}">지난주 대비 ${diff >= 0 ? "+" : ""}${diff}%</small>`}`)}${stat(rv ? Math.round((rok / rv) * 100) + "%" : "–", `복습 정답률${rv ? `<br><small class="muted">${rok}/${rv}문장</small>` : ""}`)}
+    </div>
+    <div class="wrrow small"><span>✅ 완전히 익힘 <b>${mast}</b></span><span>🎙 독백 <b>${mono}</b>번</span><span>📥 새 복습 문장 <b>${newWrong.length}</b>${manual ? ` (직접 ${manual})` : ""}</span>${sc ? `<span>⭐ 가장 많이 한 날 <b>${wd(best)}요일</b></span>` : ""}</div>
+    <ul class="wrtips small">${tips.slice(0, 3).map((t) => `<li>${t}</li>`).join("")}</ul>`;
+}
 function weaknessHtml() {
   const from = addDays(today(), -30), cnt = {};
   for (const e of S.errors) if ((e.d || "") >= from) cnt[e.t] = (cnt[e.t] || 0) + 1;
@@ -1123,6 +1156,7 @@ function renderHome(v) {
         <div class="goal"><div class="ring" style="--p:${due ? 0 : 100}">${due}</div><span>복습 0개 유지</span></div>
       </div>
     </div>
+    <div class="card"><div class="row spread"><h3>주간 리포트</h3><span class="small muted">${esc(addDays(today(), -6).slice(5).replace("-", "/"))}~${esc(today().slice(5).replace("-", "/"))}</span></div>${weeklyReportHtml()}</div>
     <div class="card"><div class="row spread"><h3>복습 성과</h3><button class="btn sm" data-go="vault">복습하기</button></div>${reviewStatsHtml()}</div>
     <div class="card"><h3>내 약점 TOP 3</h3>${weaknessHtml()}</div>
     <div class="card"><div class="row spread"><h3>말하기 기록</h3><button class="btn sm" id="goSpeakRec">문장별 보기</button></div>${speakStatsHtml()}</div>

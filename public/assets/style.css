@@ -292,3 +292,10 @@ html, body { overflow-x: hidden; }
 #rvAddBox summary::before { content: "▸ "; color: var(--muted); }
 #rvAddBox[open] summary::before { content: "▾ "; }
 .rvadd .acts { gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+/* 주간 리포트 */
+.stat small.up { color: var(--good); font-weight: 600; }
+.stat small.down { color: var(--bad); font-weight: 600; }
+.wrrow { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; color: var(--muted); }
+.wrrow b { color: var(--text); }
+.wrtips { margin: 10px 0 0; padding-left: 18px; line-height: 1.55; }
+.wrtips li + li { margin-top: 4px; }

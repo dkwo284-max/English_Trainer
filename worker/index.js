@@ -8,7 +8,7 @@
 // 빠른 작업(단어·변환·교정)은 Flash-Lite 먼저, 긴 생성(대화·영작 세트)은 Flash 먼저. 생각(thinking) 토큰은 꺼서 지연을 줄임
 const FAST = ["gemini-flash-lite-latest", "gemini-flash-latest"];
 const SLOW = ["gemini-flash-latest", "gemini-flash-lite-latest"];
-const FAST_TASKS = new Set(["word", "naturalize", "correct", "drill", "review_add", "roleplay"]);
+const FAST_TASKS = new Set(["word", "naturalize", "correct", "drill", "review_add", "roleplay", "rp_translate"]);
 const AI_PER_CODE_PER_DAY = 80;   // 코드 하나가 하루에 쓸 수 있는 AI 호출
 const AI_TOTAL_PER_DAY = 400;     // 앱 전체 하루 상한 (무료 등급 보호)
 const MAX_STATE_BYTES = 900_000;
@@ -171,6 +171,12 @@ ${mine ? 'Also judge A\'s line: "ok" true if it is natural, correct spoken Engli
 "model": ONE model answer the learner (A) could say right after B's reply: natural spoken English, easy words, 5-16 words, a real answer that moves the situation forward (not a question back unless natural), in the learner's role. "modelKo": its natural Korean meaning (구어 해요체). If "done" is true, set both to "".
 JSON: {"fix":${mine ? '{"ok":true,"better":"...","betterKo":"...","why":"..."}' : "null"},"reply":"B's next line","ko":"natural Korean meaning of reply","hint":"a short English phrase A could start their answer with","model":"A's model answer","modelKo":"Korean meaning of the model answer","done":false}`,
 
+  rp_translate: ({ scenario, roles, history, ko }) => `A Korean adult learner living in Auckland is in a live spoken role-play and cannot say their answer in English. Situation: "${scenario}". Roles: ${roles}. The learner plays A.
+${history ? "Conversation so far:\n" + history + "\n" : ""}The learner wants to say this in Korean (it may be rough, partial or spoken-style): "${ko}"
+Turn it into what A would REALLY say out loud in this exact moment: natural spoken English that fits the conversation, keeps the learner's meaning and intent (do not add new information, do not make it more polite or longer than needed), easy words, contractions, 4-22 words (two short sentences at most), light Kiwi flavour only if it fits.
+"back": the natural Korean meaning of your English (구어 해요체) so the learner can check it matches what they meant. "alt": ONE other natural way to say it (more casual or more polite), or "" if no good alternative. "why": ONE short Korean sentence naming the key expression worth remembering (e.g. "'I was wondering if…' = 정중하게 부탁할 때").
+JSON: {"en":"A's English line","back":"Korean meaning of en","alt":"alternative or empty","why":"short Korean note"}`,
+
   weak_drill: ({ type, examples }) => `A Korean adult learner in Auckland keeps making "${type}" mistakes in spoken English (Korean label: 관사=articles, 시제=tense, 전치사=prepositions, 어순=word order, 어휘 선택=word choice, 수 일치=agreement, 구어체 표현=natural spoken phrasing).
 Their recent mistakes (learner → correct):
 ${examples || "(none recorded)"}
@@ -299,6 +305,7 @@ const VALID = {
   naturalize: (r) => r && typeof r.best === "string" && r.best,
   correct: (r) => r && typeof r.score === "number",
   roleplay: (r) => r && typeof r.reply === "string" && r.reply.trim(),
+  rp_translate: (r) => r && typeof r.en === "string" && /[A-Za-z]/.test(r.en) && !/[가-힣]/.test(r.en),
   weak_drill: (r) => r && Array.isArray(r.items) && r.items.filter((i) => i && i.ko && i.en).length >= 4,
   review_add: (r) => r && Array.isArray(r.items) && r.items.length && r.items.every((i) => i && i.en && i.ko && i.natural),
   drill: (r) => r && Array.isArray(r.items) && r.items.length,

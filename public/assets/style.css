@@ -327,3 +327,5 @@ html, body { overflow-x: hidden; }
 .rphelp .en { font-size: 17px; line-height: 1.5; margin: 4px 0 2px; font-weight: 600; }
 .rphelp .blurred { filter: blur(7px); user-select: none; pointer-events: none; transition: filter .2s; }
 .rphelp .acts { gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.rphelp.kt { border-style: solid; background: var(--accent-soft); }
+.rphelp .alt { font-weight: 600; }

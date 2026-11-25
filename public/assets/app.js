@@ -840,21 +840,30 @@ function startRoleplay(sc, custom) {
   const scenario = custom || `${sc.title}${sc.setting ? " — " + sc.setting : ""}`;
   const roles = custom ? "A = me (the learner, a Korean parent living in Auckland), B = the other person in this situation" : `A = ${sc.roles?.A || "me"}, B = ${sc.roles?.B || "the other person"}`;
   const rp = { scenario, roles, lines: [], turns: 0, done: false, busy: false };
-  openSheet(`<h2>🎭 AI 역할극</h2><p class="small muted" style="margin:2px 0 8px">${esc(scenario)}<br>AI가 상대(B), 내가 A예요. 🎙를 누르고 말하면 받아 적어 대답해요. 막히면 ⌨ 로 써도 돼요.</p>
+  openSheet(`<h2>🎭 AI 역할극</h2><p class="small muted" style="margin:2px 0 8px">${esc(scenario)}<br>AI가 상대(B), 내가 A예요. 🎙를 누르고 말하면 받아 적어 대답해요. 막히면 🆘 모범답안을 보거나, ✍ 로 <b>한국어로 쓰면 영어로</b> 바꿔 줘요.</p>
     <div id="rpLog" class="rplog"></div>
     <div id="rpOut" class="small muted" style="min-height:22px;margin:6px 0"></div>
-    <div class="row" style="gap:6px"><button class="btn primary big" id="rpMic" style="flex:1">🎙 말하기</button><button class="btn" id="rpType" aria-label="글로 쓰기">⌨</button><button class="btn" id="rpEnd">끝내기</button></div>
-    <div id="rpTypeBox" hidden style="margin-top:6px"><div class="row" style="gap:6px"><input class="text" id="rpIn" placeholder="영어로 써 보세요" style="flex:1"><button class="btn primary" id="rpSend">보내기</button></div></div>`);
+    <div class="row" style="gap:6px"><button class="btn primary big" id="rpMic" style="flex:1">🎙 말하기</button><button class="btn" id="rpType" aria-label="글로 쓰기 (한국어도 가능)">✍ 글로</button><button class="btn" id="rpEnd">끝내기</button></div>
+    <div id="rpTypeBox" hidden style="margin-top:6px"><div class="row" style="gap:6px"><input class="text" id="rpIn" placeholder="영어로, 또는 한국어로 쓰세요" style="flex:1"><button class="btn primary" id="rpSend">보내기</button></div>
+      <div class="small muted" id="rpKoHint" style="margin-top:4px">🇰🇷 영어가 안 나오면 <b>한국어로 쓰세요</b>. 지금 상황에 맞는 영어로 바꿔 주고, 복습 문장에도 자동으로 저장해요.</div></div>`);
   const log = $("#rpLog"), out = $("#rpOut");
   const hist = () => rp.lines.map((l) => `${l.sp}: ${l.en}`).join("\n");
   const draw = () => {
     log.innerHTML = rp.lines.map((l, i) => l.sp === "B"
       ? `<div class="rpb"><div class="en">${tappable(l.en)}</div><div class="ko small muted">${esc(l.ko || "")}</div><div class="acts">${sayBtns(l.en)}${l.hint && i === rp.lines.length - 1 && !rp.done ? `<span class="small muted">💡 ${esc(l.hint)}…</span>` : ""}</div>${i === rp.lines.length - 1 && !rp.done ? helpHtml(l) : ""}</div>`
-      : `<div class="rpa"><div class="en">${esc(l.en)}</div>${l.assist ? `<div class="small muted">🆘 모범답안${l.assist === "said" ? "을 따라 말했어요" : "으로 답했어요"}</div>` : ""}${l.fix ? (l.fix.ok ? `<div class="small" style="color:var(--good)">✓ ${esc(l.fix.why || "자연스러워요")}</div>` : `<div class="keybox"><b>이렇게 말하면</b> ${esc(l.fix.better)} ${sayBtns(l.fix.better)}<div class="small muted">${esc(l.fix.why || "")}</div></div>`) : ""}</div>`).join("");
+      : `<div class="rpa"><div class="en">${esc(l.en)}</div>${l.assist === "ko" ? `<div class="small muted">🇰🇷 “${esc(l.ko || "")}” → 영어로 바꿔 답했어요</div>` : l.assist ? `<div class="small muted">🆘 모범답안${l.assist === "said" ? "을 따라 말했어요" : "으로 답했어요"}</div>` : ""}${l.fix ? (l.fix.ok ? `<div class="small" style="color:var(--good)">✓ ${esc(l.fix.why || "자연스러워요")}</div>` : `<div class="keybox"><b>이렇게 말하면</b> ${esc(l.fix.better)} ${sayBtns(l.fix.better)}<div class="small muted">${esc(l.fix.why || "")}</div></div>`) : ""}</div>`).join("");
     log.scrollTop = log.scrollHeight;
   };
   // 🆘 막혔을 때: 모범답안 → 듣기 → (글자 가리고) 따라 말하기 → 이 답으로 이어가기
   const helpHtml = (l) => {
+    if (rp.kt) return `<div class="rphelp kt"><div class="small muted">🇰🇷 “${esc(rp.kt.srcKo)}”<br>→ 이 상황에서는 이렇게 말해요 <span class="tag good">✓ 복습에 저장됨</span></div>
+      <div class="en ${rp.hide ? "blurred" : ""}" id="rpModel">${tappable(rp.kt.en)}</div>
+      <div class="ko small muted ${rp.hide ? "blurred" : ""}">${esc(rp.kt.back || "")}</div>
+      ${rp.kt.why ? `<div class="small" style="margin-top:2px">💡 ${esc(rp.kt.why)}</div>` : ""}
+      <div class="acts">${sayBtns(rp.kt.en)}<button class="act ${rp.hide ? "on" : ""}" data-help="hide">🙈 글자 가리기</button></div>
+      ${rp.kt.alt ? `<div class="small muted" style="margin-top:4px">다른 표현: <span class="alt">${esc(rp.kt.alt)}</span> <button class="act" data-say="${esc(rp.kt.alt)}" data-lang="en-US">🔊</button> <button class="act" data-help="usealt">이걸로</button></div>` : ""}
+      <div class="row" style="gap:6px;margin-top:6px"><button class="btn primary" data-help="shadow" style="flex:1">🎙 따라 말하기</button><button class="btn" data-help="use">이 답으로 이어가기 ›</button></div>
+      <div id="rpHelpOut" class="small" style="margin-top:6px">${rp.helpRes || ""}</div></div>`;
     if (!l.model) return "";
     if (!rp.help) return `<div class="acts" style="margin-top:6px"><button class="act help-open" data-help="open">🆘 말이 안 나와요 · 모범답안 보기</button></div>`;
     return `<div class="rphelp"><div class="small muted">🆘 이렇게 말해 보세요 — 먼저 듣고, 따라 해 보세요</div>
@@ -867,7 +876,7 @@ function startRoleplay(sc, custom) {
   const step = async (mine, assist, assistKo) => {
     if (rp.busy) return; rp.busy = true;
     $("#rpMic").disabled = true;
-    rp.help = false; rp.hide = false; rp.helpRes = "";
+    rp.help = false; rp.hide = false; rp.helpRes = ""; rp.kt = null; rp.shadowed = false;
     if (mine) { rp.lines.push({ sp: "A", en: mine, assist: assist || "", ko: assistKo || "" }); rp.turns++; draw(); }
     out.innerHTML = '<span class="spinner"></span> 상대가 생각 중…';
     try {
@@ -885,10 +894,10 @@ function startRoleplay(sc, custom) {
     rp.done = true; log_("roleplay");
     const fixes = rp.lines.filter((l) => l.sp === "A" && l.fix && !l.fix.ok && l.fix.better);
     // 모범답안을 쓴 문장은 내 실력이 아니므로 '자연스러웠어요' 집계에서 빼고, 복습에는 따로 넣을 수 있게 함
-    const helped = rp.lines.filter((l) => l.sp === "A" && l.assist);
+    const helped = rp.lines.filter((l) => l.sp === "A" && (l.assist === "model" || l.assist === "said")), koN = rp.lines.filter((l) => l.sp === "A" && l.assist === "ko").length;
     const own = rp.lines.filter((l) => l.sp === "A" && !l.assist), ownFix = fixes.filter((l) => !l.assist);
     const nSave = ownFix.length + helped.length;
-    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 모범답안을 따라 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
+    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 도움을 받아 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${koN ? `<div class="small muted" style="margin:4px 0">🇰🇷 한국어로 말해 영어로 바꾼 ${koN}문장은 복습에 이미 저장했어요.</div>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
     $("#rpMic").disabled = true;
     if ($("#rpSave")) $("#rpSave").onclick = () => {
       let n = 0;
@@ -902,11 +911,15 @@ function startRoleplay(sc, custom) {
   };
   log.onclick = async (e) => {
     const b = e.target.closest("[data-help]"); if (!b || rp.busy || rp.done) return;
-    const last = rp.lines[rp.lines.length - 1], k = b.dataset.help;
-    if (!last || last.sp !== "B" || !last.model) return;
+    const last0 = rp.lines[rp.lines.length - 1], k = b.dataset.help;
+    if (!last0 || last0.sp !== "B" || (!last0.model && !rp.kt)) return;
+    // 한국어로 바꾼 영어가 있으면 그것이, 없으면 AI 모범답안이 연습 대상
+    const last = rp.kt ? { model: rp.kt.en, modelKo: rp.kt.srcKo } : last0;
     if (k === "open") { rp.help = true; draw(); speak(last.model); return; }
     if (k === "hide") { rp.hide = !rp.hide; draw(); return; }
-    if (k === "use") { const said = rp.shadowed; rp.shadowed = false; step(last.model, said ? "said" : "model", last.modelKo); return; }
+    if (k === "usealt" && rp.kt) { if (rp.kt.rowId) { S.wrong = S.wrong.filter((w) => w.id !== rp.kt.rowId); }   // 고른 표현만 복습에 남김
+      rp.kt.en = rp.kt.alt; rp.kt.alt = ""; rp.kt.back = ""; rp.helpRes = ""; rp.shadowed = false; saveKt(rp.kt); draw(); speak(rp.kt.en); return; }
+    if (k === "use") { const said = rp.shadowed; rp.shadowed = false; step(last.model, rp.kt ? "ko" : said ? "said" : "model", last.modelKo); return; }
     if (k === "shadow") {
       const o = $("#rpHelpOut"); if (!o) return;
       o.innerHTML = '<span class="spinner"></span> 말해 보세요…';
@@ -920,8 +933,39 @@ function startRoleplay(sc, custom) {
   };
   $("#rpMic").onclick = async () => { if (rp.busy || rp.done) return; const t = await hearFree(out); if (t) { out.textContent = ""; step(t); } };
   $("#rpType").onclick = () => { $("#rpTypeBox").hidden = !$("#rpTypeBox").hidden; if (!$("#rpTypeBox").hidden) $("#rpIn").focus(); };
-  $("#rpSend").onclick = () => { const t = $("#rpIn").value.trim(); if (!t || rp.busy || rp.done) return; $("#rpIn").value = ""; step(t); };
-  $("#rpIn").onkeydown = (e) => { if (e.key === "Enter") $("#rpSend").click(); };
+  // 🇰🇷 한국어로 쓰면: 지금 상황에 맞는 영어로 바꾸고 → 복습 문장으로 자동 저장 → 듣기·따라 말하기 → 이어가기
+  const saveKt = (kt) => {
+    const w = addManualReview({ en: kt.en, ko: kt.srcKo, natural: kt.en, why: kt.why || "역할극에서 한국어로 말하고 싶었던 문장", types: [] }, false);
+    const row = S.wrong.find((x) => !x.del && norm(x.en) === norm(kt.en));
+    if (row && w === true) { row.src = "역할극 한국어"; kt.rowId = row.id; save(); } else kt.rowId = "";
+    return w;
+  };
+  const translateKo = async (ko) => {
+    if (rp.busy) return; rp.busy = true;
+    const last = rp.lines[rp.lines.length - 1];
+    out.innerHTML = '<span class="spinner"></span> 지금 상황에 맞는 영어로 바꾸는 중…';
+    try {
+      const r = await ai("rp_translate", { scenario: rp.scenario, roles: rp.roles, history: hist(), ko }, { fresh: true });
+      rp.kt = { en: String(r.en).trim(), back: r.back || "", alt: r.alt && /[A-Za-z]/.test(r.alt) && !/[가-힣]/.test(r.alt) ? String(r.alt).trim() : "", why: r.why || "", srcKo: ko };
+      rp.help = true; rp.hide = false; rp.helpRes = ""; rp.shadowed = false;
+      const saved = saveKt(rp.kt);
+      draw(); out.textContent = saved === "dup" ? "이미 복습에 있는 문장이에요." : "";
+      speak(rp.kt.en);
+    } catch (e) { out.textContent = e.message; $("#rpIn").value = ko; }
+    finally { rp.busy = false; }
+  };
+  const HANGUL = /[가-힣ㄱ-ㅎ]/;
+  const isKo = (t) => { const h = (t.match(/[가-힣ㄱ-ㅎ]/g) || []).length, e = (t.match(/[A-Za-z]/g) || []).length; return h >= 2 || (h >= 1 && h >= e); };
+  const sendText = () => {
+    const t = $("#rpIn").value.trim(); if (!t || rp.busy || rp.done) return;
+    const last = rp.lines[rp.lines.length - 1];
+    $("#rpIn").value = "";
+    if (isKo(t)) { if (last && last.sp === "B") translateKo(t.slice(0, 300)); else out.textContent = "상대가 말한 뒤에 쓸 수 있어요."; return; }
+    step(t);
+  };
+  $("#rpSend").onclick = sendText;
+  $("#rpIn").oninput = () => { $("#rpSend").textContent = isKo($("#rpIn").value) ? "영어로 바꾸기" : "보내기"; };
+  $("#rpIn").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("#rpSend").click(); };
   $("#rpEnd").onclick = () => { if (rp.turns && !rp.done) finish(); else closeSheet(); };
   step("");
 }

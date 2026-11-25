@@ -8,7 +8,7 @@
 // 빠른 작업(단어·변환·교정)은 Flash-Lite 먼저, 긴 생성(대화·영작 세트)은 Flash 먼저. 생각(thinking) 토큰은 꺼서 지연을 줄임
 const FAST = ["gemini-flash-lite-latest", "gemini-flash-latest"];
 const SLOW = ["gemini-flash-latest", "gemini-flash-lite-latest"];
-const FAST_TASKS = new Set(["word", "naturalize", "correct", "drill", "review_add"]);
+const FAST_TASKS = new Set(["word", "naturalize", "correct", "drill", "review_add", "roleplay"]);
 const AI_PER_CODE_PER_DAY = 80;   // 코드 하나가 하루에 쓸 수 있는 AI 호출
 const AI_TOTAL_PER_DAY = 400;     // 앱 전체 하루 상한 (무료 등급 보호)
 const MAX_STATE_BYTES = 900_000;
@@ -68,6 +68,33 @@ async function handleState(request, env) {
   return json({ error: "method" }, 405);
 }
 
+// ── My Hub 용 요약: 오늘 복습할 문장 수 등 숫자만 (학습 내용·문장은 보내지 않음). 허브(github.io)에서만 읽을 수 있게 CORS 제한 ──
+const HUB_ORIGIN = "https://dkwo284-max.github.io";
+const REVIEW_DAILY_CAP = 20;
+async function handleSummary(request, env) {
+  const origin = request.headers.get("origin") || "";
+  const cors = origin === HUB_ORIGIN ? { "access-control-allow-origin": HUB_ORIGIN, "access-control-allow-headers": "x-code", "access-control-allow-methods": "GET", "vary": "origin" } : {};
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "access-control-max-age": "86400" } });
+  const out = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...cors } });
+  if (!env.STORE) return out({ error: "kv" }, 500);
+  const code = await readCode(request);
+  if (!code) return out({ error: "코드가 필요합니다" }, 400);
+  const raw = await env.STORE.get("u:" + (await codeKey(code, env)));
+  if (!raw) return out({ error: "이 코드의 기록이 없어요" }, 404);
+  const S = JSON.parse(raw), day = nzToday(), h = (S.history || {})[day] || {};
+  const act = (S.wrong || []).filter((w) => !w.del && !w.mastered);
+  const dueAll = act.filter((w) => (w.due || "") <= day).length, done = h.review || 0;
+  const days = Object.keys(S.history || {}).sort().reverse();
+  let streak = 0;
+  for (let d = new Date(day + "T12:00:00Z"); ; d.setUTCDate(d.getUTCDate() - 1)) {
+    const k = d.toISOString().slice(0, 10), x = (S.history || {})[k];
+    if (x && Object.values(x).some((v) => v > 0)) streak++; else if (k !== day) break;
+    if (streak > 400) break;
+  }
+  return out({ day, due: Math.min(dueAll, Math.max(0, REVIEW_DAILY_CAP - done)), dueAll, reviewedToday: done, cap: REVIEW_DAILY_CAP,
+    speakToday: h.speak || 0, monoToday: h.mono || 0, streak, lastDay: days[0] || null });
+}
+
 // ── AI ─────────────────────────────────────────────────────
 const SYS = `You are a friendly English speaking coach for a Korean adult living in Auckland, New Zealand.
 Write natural, spoken, everyday English that any native speaker (NZ, US, UK, AU) understands instantly.
@@ -110,6 +137,18 @@ JSON: {"best":"most natural spoken version","casual":"more casual/Kiwi version",
 ${target ? "The learner is practising: " + target + ". The \"natural\" version MUST keep this same structure/tense (do not rephrase into a different sentence pattern or tense).\n" : ""}${context ? "Dialogue so far:\n" + context + "\n" : ""}${answer ? 'Reference answer: "' + answer + '"\n' : ""}Learner's English: "${mine}"
 Judge whether the learner's sentence is correct, natural spoken English that conveys the Korean meaning (other natural wordings are fine).
 JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of the learner's sentence (same if fine)","natural":"how a native would say it","why":"Korean explanation of the main problems or praise (1-3 sentences)","points":["short Korean grammar/expression points (max 3)"],"types":[up to 3 of exactly these labels for the learner's mistakes, empty array if none: "관사","시제","전치사","어순","어휘 선택","수 일치","구어체 표현","기타"]}`,
+
+  roleplay: ({ scenario, roles, history, mine }) => `Live spoken role-play for a Korean adult learner living in Auckland. Situation: "${scenario}". Roles: ${roles}. YOU play B; the learner plays A.
+${history ? "Conversation so far:\n" + history + "\n" : "The conversation has not started: B speaks first.\n"}${mine ? 'The learner (A) just said (speech-to-text, may lack punctuation): "' + mine + '"\n' : ""}
+Rules: B's reply is ONE natural spoken turn (1-2 short sentences, 6-25 words) that reacts to what A said and moves the situation forward, light Kiwi flavour, ends with something A can answer. If the situation has naturally finished (about 6-8 exchanges), wrap up politely and set "done": true.
+${mine ? 'Also judge A\'s line: "ok" true if it is natural, correct spoken English that fits (ignore missing punctuation/capitals and small speech-to-text slips). "better": how a native would say A\'s line in this situation (same meaning, keep it close; same as A\'s line with punctuation if already fine). "betterKo": its natural Korean meaning. "why": one short Korean sentence on the main fix or praise.' : 'There is no learner line yet: set "fix" to null.'}
+JSON: {"fix":${mine ? '{"ok":true,"better":"...","betterKo":"...","why":"..."}' : "null"},"reply":"B's next line","ko":"natural Korean meaning of reply","hint":"a short English phrase A could start their answer with","done":false}`,
+
+  weak_drill: ({ type, examples }) => `A Korean adult learner in Auckland keeps making "${type}" mistakes in spoken English (Korean label: 관사=articles, 시제=tense, 전치사=prepositions, 어순=word order, 어휘 선택=word choice, 수 일치=agreement, 구어체 표현=natural spoken phrasing).
+Their recent mistakes (learner → correct):
+${examples || "(none recorded)"}
+Make 5 NEW everyday Auckland-life sentences that specifically practise the "${type}" point the learner gets wrong (different situations from the examples; 7-16 words; natural spoken English).
+JSON: {"items":[{"ko":"natural Korean sentence the learner must say in English","en":"the natural English answer","note":"short Korean tip pointing at the ${type} point in this sentence"}]}`,
 
   review_add: ({ text, ctx, hint }) => `A Korean adult learner living in Auckland wants to add these English sentences (one per line) to their spaced-repetition review list:
 ${text}
@@ -232,6 +271,8 @@ const VALID = {
   word: (r) => r && typeof r.ko === "string" && r.ko,
   naturalize: (r) => r && typeof r.best === "string" && r.best,
   correct: (r) => r && typeof r.score === "number",
+  roleplay: (r) => r && typeof r.reply === "string" && r.reply.trim(),
+  weak_drill: (r) => r && Array.isArray(r.items) && r.items.filter((i) => i && i.ko && i.en).length >= 4,
   review_add: (r) => r && Array.isArray(r.items) && r.items.length && r.items.every((i) => i && i.en && i.ko && i.natural),
   drill: (r) => r && Array.isArray(r.items) && r.items.length,
   dialogue: (r) => r && Array.isArray(r.lines) && r.lines.filter((l) => l && l.en).length >= 6,
@@ -433,6 +474,7 @@ export default {
       if (pathname === "/api/ai") return await handleAI(request, env);
       if (pathname === "/api/dict") return await handleDict(request);
       if (pathname === "/api/stt") return await handleSTT(request, env);
+      if (pathname === "/api/summary") return await handleSummary(request, env);
       if (pathname === "/api/health") return json({ ok: true, kv: !!env.STORE, ai: !!env.GEMINI_API_KEY, wai: !!env.AI });
     } catch (e) {
       return json({ error: "서버 오류: " + e.message }, 500);

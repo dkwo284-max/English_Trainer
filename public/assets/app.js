@@ -815,6 +815,81 @@ async function hearSentence(target, out) {
   const best = alts.map((a) => ({ a, d: wordDiff(target, a) })).sort((x, y) => y.d.score - x.d.score)[0];
   return { ...best.d, text: best.a, via: "브라우저" };
 }
+/** 정답 없이 듣기(역할극): 녹음 → Whisper, 안 되면 브라우저 인식. 들린 글자를 돌려줌(없으면 "") */
+async function hearFree(out) {
+  const canRec = navigator.mediaDevices?.getUserMedia && window.MediaRecorder;
+  if (S.settings.stt !== "browser" && sttOffToday !== today() && canRec) {
+    let rec;
+    try { rec = await startRecorder(); } catch (e) { out.textContent = e.message; return ""; }
+    const heard = await autoStop(rec, out, 20000);
+    const { blob } = await rec.stop();
+    if (!heard) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return ""; }
+    out.innerHTML = '<span class="spinner"></span> 받아쓰는 중…';
+    try { const d = await transcribe(blob, "shadow"); if (d.text) return d.text; out.textContent = "말소리를 알아듣지 못했어요. 다시 해 보세요."; return ""; }
+    catch (e) { if (e.status === 429) sttOffToday = today(); toast("AI 받아쓰기가 안 돼서 브라우저 인식으로 들을게요. 한 번 더 말해 주세요", 3000); }
+  }
+  out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
+  const alts = await listen().catch((e) => { out.textContent = e.message; return []; });
+  if (!alts.length && !out.textContent) out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요.";
+  return alts[0] || "";
+}
+
+// ── 🎭 AI 역할극: AI가 B 역할, 내가 A. 말하면 받아 적고 → 내 문장 교정 + B가 대답(음성). 끝나면 고친 문장을 복습에 ──
+const RP_MAX_TURNS = 7;
+function startRoleplay(sc, custom) {
+  const scenario = custom || `${sc.title}${sc.setting ? " — " + sc.setting : ""}`;
+  const roles = custom ? "A = me (the learner, a Korean parent living in Auckland), B = the other person in this situation" : `A = ${sc.roles?.A || "me"}, B = ${sc.roles?.B || "the other person"}`;
+  const rp = { scenario, roles, lines: [], turns: 0, done: false, busy: false };
+  openSheet(`<h2>🎭 AI 역할극</h2><p class="small muted" style="margin:2px 0 8px">${esc(scenario)}<br>AI가 상대(B), 내가 A예요. 🎙를 누르고 말하면 받아 적어 대답해요. 막히면 ⌨ 로 써도 돼요.</p>
+    <div id="rpLog" class="rplog"></div>
+    <div id="rpOut" class="small muted" style="min-height:22px;margin:6px 0"></div>
+    <div class="row" style="gap:6px"><button class="btn primary big" id="rpMic" style="flex:1">🎙 말하기</button><button class="btn" id="rpType" aria-label="글로 쓰기">⌨</button><button class="btn" id="rpEnd">끝내기</button></div>
+    <div id="rpTypeBox" hidden style="margin-top:6px"><div class="row" style="gap:6px"><input class="text" id="rpIn" placeholder="영어로 써 보세요" style="flex:1"><button class="btn primary" id="rpSend">보내기</button></div></div>`);
+  const log = $("#rpLog"), out = $("#rpOut");
+  const hist = () => rp.lines.map((l) => `${l.sp}: ${l.en}`).join("\n");
+  const draw = () => {
+    log.innerHTML = rp.lines.map((l, i) => l.sp === "B"
+      ? `<div class="rpb"><div class="en">${tappable(l.en)}</div><div class="ko small muted">${esc(l.ko || "")}</div><div class="acts">${sayBtns(l.en)}${l.hint && i === rp.lines.length - 1 && !rp.done ? `<span class="small muted">💡 ${esc(l.hint)}…</span>` : ""}</div></div>`
+      : `<div class="rpa"><div class="en">${esc(l.en)}</div>${l.fix ? (l.fix.ok ? `<div class="small" style="color:var(--good)">✓ ${esc(l.fix.why || "자연스러워요")}</div>` : `<div class="keybox"><b>이렇게 말하면</b> ${esc(l.fix.better)} ${sayBtns(l.fix.better)}<div class="small muted">${esc(l.fix.why || "")}</div></div>`) : ""}</div>`).join("");
+    log.scrollTop = log.scrollHeight;
+  };
+  const step = async (mine) => {
+    if (rp.busy) return; rp.busy = true;
+    $("#rpMic").disabled = true;
+    if (mine) { rp.lines.push({ sp: "A", en: mine }); rp.turns++; draw(); }
+    out.innerHTML = '<span class="spinner"></span> 상대가 생각 중…';
+    try {
+      const r = await ai("roleplay", { scenario: rp.scenario, roles: rp.roles, history: hist().split("\n").slice(0, mine ? -1 : undefined).join("\n"), mine: mine || "" }, { fresh: true });
+      if (mine && r.fix) rp.lines[rp.lines.length - 1].fix = r.fix;
+      rp.lines.push({ sp: "B", en: r.reply, ko: r.ko, hint: r.hint });
+      rp.done = !!r.done || rp.turns >= RP_MAX_TURNS;
+      draw(); out.textContent = "";
+      await speak(r.reply, S.settings.accent === "en-US" ? "en-GB" : undefined);
+      if (rp.done) finish();
+    } catch (e) { out.textContent = e.message; if (mine) { rp.lines.pop(); rp.turns--; draw(); } }
+    finally { rp.busy = false; if ($("#rpMic")) $("#rpMic").disabled = rp.done; }
+  };
+  const finish = () => {
+    rp.done = true; log_("roleplay");
+    const fixes = rp.lines.filter((l) => l.sp === "A" && l.fix && !l.fix.ok && l.fix.better);
+    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> 내가 말한 ${rp.turns}문장 중 ${rp.turns - fixes.length}문장이 자연스러웠어요.${fixes.length ? `<div class="small muted" style="margin:4px 0">고친 문장 ${fixes.length}개를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">고친 문장 ${fixes.length}개 복습에 추가</button>` : ""}</div>`;
+    $("#rpMic").disabled = true;
+    if ($("#rpSave")) $("#rpSave").onclick = () => {
+      let n = 0;
+      for (const l of fixes) if (addManualReview({ en: l.fix.better, ko: l.fix.betterKo || "", natural: l.fix.better, why: l.fix.why, types: [] }, false) === true) n++;
+      S.wrong.filter((w) => fixes.some((l) => norm(l.fix.better) === norm(w.en))).forEach((w) => { w.src = "역할극"; w.mine = w.mine || fixes.find((l) => norm(l.fix.better) === norm(w.en)).en; });
+      save(); $("#rpSave").disabled = true; $("#rpSave").textContent = `✓ ${n}개 추가됨`;
+    };
+  };
+  $("#rpMic").onclick = async () => { if (rp.busy || rp.done) return; const t = await hearFree(out); if (t) { out.textContent = ""; step(t); } };
+  $("#rpType").onclick = () => { $("#rpTypeBox").hidden = !$("#rpTypeBox").hidden; if (!$("#rpTypeBox").hidden) $("#rpIn").focus(); };
+  $("#rpSend").onclick = () => { const t = $("#rpIn").value.trim(); if (!t || rp.busy || rp.done) return; $("#rpIn").value = ""; step(t); };
+  $("#rpIn").onkeydown = (e) => { if (e.key === "Enter") $("#rpSend").click(); };
+  $("#rpEnd").onclick = () => { if (rp.turns && !rp.done) finish(); else closeSheet(); };
+  step("");
+}
+const log_ = (k) => log(k);
+
 const hearHtml = (r) => `<div class="dwords">${r.html}</div><div class="small muted">들린 말(${r.via}): “${esc(r.text)}”${r.missed.length ? ` · 다시 들어 볼 단어: <b>${r.missed.slice(0, 4).map(esc).join(", ")}</b>` : ""}</div>`;
 
 // ── 원문 대조: 단어 정렬(LCS) ──
@@ -1203,7 +1278,7 @@ function reviewStatsHtml() {
 function weeklyReportHtml() {
   const span = (from) => [...Array(7)].map((_, k) => addDays(today(), from + k));
   const cur = span(-6), prev = span(-13);
-  const sentOf = (x) => (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0) + (x.shadow || 0) + (x.dictation || 0) + (x.mono || 0) * 6;
+  const sentOf = (x) => (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0) + (x.shadow || 0) + (x.dictation || 0) + (x.weak || 0) + (x.mono || 0) * 6 + (x.roleplay || 0) * 6;
   const sum = (days, f) => days.reduce((a, d) => a + f(S.history[d] || {}), 0);
   const active = (days) => days.filter((d) => Object.values(S.history[d] || {}).some((v) => v > 0)).length;
   const sc = sum(cur, sentOf), sp = sum(prev, sentOf), ac = active(cur);
@@ -1246,6 +1321,35 @@ function speakStatsHtml() {
   if (!recs.length) return `<p class="small muted" style="margin:6px 0 0">스피킹에서 🎙 따라 말하기를 하면 문장별 일치율이 기록돼요.</p>`;
   const avg = Math.round(recs.reduce((a, r) => a + r.last, 0) / recs.length), gain = Math.round(recs.reduce((a, r) => a + (r.last - r.first), 0) / recs.length), low = recs.filter((r) => r.last < 70).length;
   return `<div class="stats" style="grid-template-columns:repeat(3,1fr);margin-top:6px"><div class="stat"><b>${avg}%</b><span>평균 일치율</span></div><div class="stat"><b>${gain >= 0 ? "+" : ""}${gain}p</b><span>첫 시도 대비</span></div><div class="stat"><b>${low}</b><span>다시 연습</span></div></div>`;
+}
+
+// 이번 주(월요일 시작) 약점 맞춤 연습: 최근 30일 가장 많이 틀린 유형으로 AI가 새 문장 5개를 만들고, 틀리면 복습으로
+const weekStart = () => { const d = new Date(today() + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+function topWeakType() {
+  const from = addDays(today(), -30), cnt = {};
+  for (const e of S.errors) if ((e.d || "") >= from && e.t !== "기타") cnt[e.t] = (cnt[e.t] || 0) + 1;
+  return Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+}
+function weeklyWeakHtml() {
+  const wk = S.done["wkset:" + weekStart()], type = wk?.type || topWeakType();
+  if (!type) return `<p class="small muted" style="margin:6px 0 0">영작·복습에서 교정을 받으면, 매주 월요일 가장 많이 틀린 유형으로 새 연습 5문장을 만들어 드려요.</p>`;
+  return `<p class="small" style="margin:6px 0 8px">이번 주 약점: <b>${esc(type)}</b>${wk ? ` · 5문장 중 ${wk.ok || 0}개 맞힘${wk.tries ? ` (${wk.tries}번 풀이)` : ""}` : ""}</p>
+    <div id="wkSetQ"></div><button class="btn ${wk ? "" : "primary"}" id="wkSetGo">${wk ? "다시 풀기" : "AI로 이번 주 5문장 만들기"}</button>`;
+}
+async function runWeeklyWeak(v) {
+  const key = "wkset:" + weekStart(), btn = $("#wkSetGo");
+  let wk = S.done[key];
+  if (!wk) {
+    const type = topWeakType(); if (!type) return;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 만드는 중…';
+    const ex = S.wrong.filter((w) => !w.del && (w.types || []).includes(type) && w.mine).slice(0, 4).map((w) => `- ${w.mine} → ${w.en}`).join("\n");
+    try {
+      const r = await ai("weak_drill", { type, examples: ex });
+      wk = S.done[key] = { type, items: r.items.filter((i) => i.ko && i.en).slice(0, 5), ok: 0, tries: 0 }; save();
+    } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = "AI로 이번 주 5문장 만들기"; return; }
+  }
+  btn.remove(); wk.tries = (wk.tries || 0) + 1;
+  quiz($("#wkSetQ"), wk.items.map((i) => ({ ko: i.ko, en: i.en, note: i.note })), { kind: "weak", src: `약점 연습 · ${wk.type}`, target: wk.type, onDone: (ok) => { wk.ok = Math.max(wk.ok || 0, +ok || 0); save(); } });
 }
 
 function weakPractice(type) {
@@ -1292,6 +1396,7 @@ function renderHome(v) {
     <div class="card"><div class="row spread"><h3>주간 리포트</h3><span class="small muted">${esc(addDays(today(), -6).slice(5).replace("-", "/"))}~${esc(today().slice(5).replace("-", "/"))}</span></div>${weeklyReportHtml()}</div>
     <div class="card"><div class="row spread"><h3>복습 성과</h3><button class="btn sm" data-go="vault">복습하기</button></div>${reviewStatsHtml()}</div>
     <div class="card"><h3>내 약점 TOP 3</h3>${weaknessHtml()}</div>
+    <div class="card"><div class="row spread"><h3>이번 주 약점 맞춤 연습</h3><span class="small muted">매주 월요일 새로</span></div>${weeklyWeakHtml()}</div>
     <div class="card"><div class="row spread"><h3>말하기 기록</h3><button class="btn sm" id="goSpeakRec">문장별 보기</button></div>${speakStatsHtml()}</div>
     <div class="card"><div class="row spread"><h3>독백 낭독 기록</h3><button class="btn sm" data-go="mono">낭독하기</button></div>${monoStatsHtml()}</div>
     <div class="card"><h3>학습 달력 <small class="muted">최근 12주</small></h3>${heatmapHtml()}</div>
@@ -1302,6 +1407,7 @@ function renderHome(v) {
     </div>`;
   v.querySelectorAll("[data-go]").forEach((t) => (t.onclick = () => go(t.dataset.go)));
   v.querySelectorAll("[data-weak]").forEach((b) => (b.onclick = () => weakPractice(b.dataset.weak)));
+  if ($("#wkSetGo")) $("#wkSetGo").onclick = () => runWeeklyWeak(v);
   const gsr = $("#goSpeakRec"); if (gsr) gsr.onclick = () => { vaultMode = "speakrec"; go("vault"); };
   v.querySelector("[data-go-saved]").onclick = () => { vaultMode = "saved"; vaultQ = ""; go("vault"); };
   $("#qConvGo").onclick = () => { const t = $("#qConv").value.trim(); openTools("conv", t); if (t) convert(t, $("#cOut")); };
@@ -1330,6 +1436,9 @@ function renderSpeak(v) {
       ${speakMode === "role" ? `<div class="row small" style="gap:6px"><span class="muted">내 역할</span><div class="seg" id="roleSeg" style="flex:1;margin:0"><button data-r="A">A ${esc(sc.roles?.A || "")}</button><button data-r="B">B ${esc(sc.roles?.B || "")}</button></div></div>` : ""}
       <p class="small muted" style="margin:6px 0 0">${speakMode === "read" ? "단어를 누르면 뜻·발음을 볼 수 있어요. 노란색은 꼭 익힐 핵심 표현." : speakMode === "hide" ? "한국어를 보고 먼저 영어로 말한 뒤, 문장을 눌러 확인하세요." : "상대 대사는 자동으로 읽어 주고, 내 차례에 🎙로 말해 보세요."}</p>
     </div>
+    <div class="card"><div class="row spread"><h3>🎭 AI와 역할극</h3><span class="small muted">말하면 대답해요</span></div>
+      <p class="small muted" style="margin:4px 0 8px">대본 없이 실제 대화처럼: AI가 <b>${esc(sc.roles?.B || "상대")}</b> 역할을 맡고, 내가 말한 문장은 바로 고쳐 줘요.</p>
+      <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn primary" id="rpGo">이 상황으로 시작</button><button class="btn" id="rpCustom">다른 상황 입력</button></div></div>
     <div class="card" id="rtnCard">
       <div class="row spread"><h3>🎧 받아쓰기 연습</h3><span class="small muted">듣고 → 쓰고 → 말하고 → 영작</span></div>
       <p class="small muted" style="margin:4px 0 8px">같은 문장을 <b>받아쓰기 → 따라 말하기 → 영작</b> 세 방식으로 꺼내 쓰면 훨씬 오래 남아요. 문장 수를 골라 시작하세요.</p>
@@ -1341,6 +1450,8 @@ function renderSpeak(v) {
       <button class="btn" id="saveScn">${savedScn ? "★ 보관됨" : "☆ 시나리오 보관"}</button>
       <button class="btn primary" id="doneScn">${S.done[doneKey] ? "✓ 오늘 완료" : "완료 기록"}</button>
     </div>`;
+  $("#rpGo").onclick = () => startRoleplay(sc);
+  $("#rpCustom").onclick = () => { const t = prompt("어떤 상황인가요? (예: 이웃에게 울타리 수리비 나누자고 말하기)"); if (t && t.trim()) startRoleplay(sc, t.trim().slice(0, 200)); };
   [...$("#modeSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.m === speakMode));
   $("#modeSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { speakMode = b.dataset.m; revealed.clear(); renderSpeak(v); } };
   if ($("#roleSeg")) { [...$("#roleSeg").children].forEach((b) => b.classList.toggle("on", b.dataset.r === rolePick)); $("#roleSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { rolePick = b.dataset.r; renderSpeak(v); } }; }

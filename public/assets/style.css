@@ -305,3 +305,9 @@ html, body { overflow-x: hidden; }
 .dw-miss { color: var(--bad); text-decoration: underline wavy; text-underline-offset: 3px; font-weight: 600; }
 .recdot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); margin-right: 4px; vertical-align: 0; animation: recpulse 1s infinite; }
 @keyframes recpulse { 50% { opacity: .3; } }
+/* 🎭 AI 역할극 */
+.rplog { display: grid; gap: 8px; max-height: 48vh; overflow-y: auto; padding: 2px; }
+.rpb, .rpa { padding: 8px 10px; border-radius: 12px; max-width: 92%; }
+.rpb { background: var(--b-bubble); justify-self: start; }
+.rpa { background: var(--a-bubble); justify-self: end; }
+.rpb .acts { margin-top: 4px; gap: 4px; flex-wrap: wrap; }

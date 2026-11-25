@@ -103,6 +103,19 @@ async function push() {
   } finally { saving = false; }
 }
 window.addEventListener("online", () => { if (dirty) push(); });
+// 오프라인 앱(홈 화면 설치): 서비스 워커 등록 + 설치 안내
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "127.0.0.1" || location.hostname === "localhost"))
+  addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+let installPrompt = null;
+addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; });
+addEventListener("appinstalled", () => { installPrompt = null; toast("홈 화면에 설치했어요 📱"); });
+const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+function installHtml() {
+  if (isStandalone()) return `<p class="small muted">✅ 홈 화면 앱으로 실행 중이에요. 인터넷이 끊겨도 화면이 열리고, 기록은 연결되면 자동으로 올라가요.</p>`;
+  if (installPrompt) return `<button class="btn big" id="installApp" style="margin-top:6px">📱 홈 화면에 앱 설치</button><p class="small muted">설치하면 주소창 없이 앱처럼 열리고, 오프라인에서도 복습·낭독 화면이 열려요.</p>`;
+  if (/iphone|ipad|ipod/i.test(navigator.userAgent)) return `<p class="small muted">📱 홈 화면에 설치: Safari 아래쪽 <b>공유</b> 버튼 → <b>홈 화면에 추가</b>. 설치하면 오프라인에서도 열려요.</p>`;
+  return `<p class="small muted">📱 브라우저 메뉴(⋮)의 <b>앱 설치</b> 또는 <b>홈 화면에 추가</b>로 설치할 수 있어요.</p>`;
+}
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && dirty) push(); });
 
 
@@ -1113,9 +1126,11 @@ $("#codeChip").onclick = () => {
     <p class="small muted">기기에 뉴질랜드 음성이 없으면 비슷한 영어 음성으로 재생돼요.</p>
     <div class="label">따라 말하기 채점</div><div class="seg" id="sttSeg">${[["ai", "AI 받아쓰기(정확)"], ["browser", "브라우저(빠름)"]].map(([v, l]) => `<button data-v="${v}" class="${(S.settings.stt || "ai") === v ? "on" : ""}">${l}</button>`).join("")}</div>
     <p class="small muted">AI 받아쓰기는 녹음을 Whisper로 받아 적어 단어마다 맞음·빠짐을 보여 줘요. 하루 한도를 넘으면 자동으로 브라우저 인식을 써요.</p>
+    <div class="label">앱 설치</div>${installHtml()}
     <button class="btn big" id="syncNow" style="margin-top:6px">지금 동기화</button>
     <button class="btn big ghost" id="logout" style="margin-top:8px">다른 코드로 바꾸기</button>`);
   $("#accSeg").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; S.settings.accent = b.dataset.v; save(); [...$("#accSeg").children].forEach((x) => x.classList.toggle("on", x === b)); speak("Kia ora, how's it going?"); };
+  if ($("#installApp")) $("#installApp").onclick = async () => { const p = installPrompt; if (!p) return; installPrompt = null; p.prompt(); try { await p.userChoice; } catch {} closeSheet(); };
   $("#sttSeg").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; S.settings.stt = b.dataset.v; save(); [...$("#sttSeg").children].forEach((x) => x.classList.toggle("on", x === b)); };
   $("#rateSeg").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; S.settings.rate = +b.dataset.v; save(); [...$("#rateSeg").children].forEach((x) => x.classList.toggle("on", x === b)); };
   $("#syncNow").onclick = async () => { dirty = true; await push(); toast($("#syncDot").title); };

@@ -693,6 +693,7 @@ async function startRecorder() {
   rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
   rec.start(250);
   return {
+    stream,
     stop: () => new Promise((res) => {
       rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); res({ blob: new Blob(parts, { type: rec.mimeType || "audio/webm" }), dur: (Date.now() - t0) / 1000 }); };
       if (rec.state !== "inactive") rec.stop(); else rec.onstop();
@@ -714,13 +715,79 @@ async function toWav16k(blob) {
   for (let i = 0; i < pcm.length; i++) { const v = Math.max(-1, Math.min(1, pcm[i])); out.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
   return new Blob([out], { type: "audio/wav" });
 }
-async function transcribe(blob) {
+async function transcribe(blob, kind = "") {
   const wav = await toWav16k(blob);
-  const r = await fetch("/api/stt", { method: "POST", headers: { "content-type": "audio/wav", "x-code": CODE }, body: wav });
+  const r = await fetch("/api/stt", { method: "POST", headers: { "content-type": "audio/wav", "x-code": CODE, ...(kind ? { "x-kind": kind } : {}) }, body: wav });
   let d = {}; try { d = await r.json(); } catch {}
-  if (!r.ok) throw new Error(d.error || "받아쓰기 실패");
+  if (!r.ok) { const e = new Error(d.error || "받아쓰기 실패"); e.status = r.status; throw e; }
   return d;
 }
+
+// ── 따라 말하기 채점: 녹음 → Whisper 받아쓰기 → 단어별 대조. 안 되면 브라우저 음성 인식으로 ──
+let sttOffToday = "";   // 한도 초과 등으로 오늘은 브라우저 인식만 쓰는 날
+/** 말이 끝나고 조용해지면(1.2초) 자동으로 녹음을 멈춘다. 끝 버튼으로도 멈춤 */
+function autoStop(rec, out, maxMs) {
+  return new Promise((resolve) => {
+    let done = false, ac, timer, iv;
+    const finish = (heard) => { if (done) return; done = true; clearTimeout(timer); clearInterval(iv); try { ac && ac.close(); } catch {} resolve(heard); };
+    let spoke = false, quietSince = 0, floor = 0, n = 0;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext; ac = new AC();
+      const an = ac.createAnalyser(); an.fftSize = 1024; ac.createMediaStreamSource(rec.stream).connect(an);
+      const buf = new Float32Array(an.fftSize), t0 = Date.now();
+      iv = setInterval(() => {
+        an.getFloatTimeDomainData(buf); let sum = 0; for (const x of buf) sum += x * x; const rms = Math.sqrt(sum / buf.length);
+        if (Date.now() - t0 < 300) { floor = (floor * n + rms) / ++n; return; }   // 처음 0.3초로 주변 소음 크기 측정
+        const loud = rms > Math.max(0.015, floor * 3);
+        if (loud) { spoke = true; quietSince = 0; } else if (spoke) { quietSince = quietSince || Date.now(); if (Date.now() - quietSince > 1200) finish(true); }
+        if (!spoke && Date.now() - t0 > 6000) finish(false);   // 6초 동안 말이 없으면 끝
+      }, 100);
+    } catch { spoke = true; }   // 소리 크기를 못 재는 기기는 시간·버튼으로만
+    timer = setTimeout(() => finish(true), maxMs);
+    out.innerHTML = `<span class="recdot"></span> 듣는 중… 말을 마치면 자동으로 끝나요 <button class="act" data-recstop>■ 끝</button>`;
+    out.querySelector("[data-recstop]").onclick = () => finish(true);
+  });
+}
+/** 목표 문장 단어마다 맞음/빠짐 표시 */
+function wordDiff(target, heard) {
+  const words = String(target).split(/\s+/).filter(Boolean);
+  const ref = []; words.forEach((w, wi) => toks(w).forEach((t) => ref.push({ wi, t })));
+  const hyp = toks(heard), R = ref.length, H = hyp.length;
+  const m = Array.from({ length: R + 1 }, () => new Array(H + 1).fill(0));
+  for (let i = 1; i <= R; i++) for (let j = 1; j <= H; j++) m[i][j] = editOk(ref[i - 1].t, hyp[j - 1]) ? m[i - 1][j - 1] + 1 : Math.max(m[i - 1][j], m[i][j - 1]);
+  const ok = new Set(); for (let i = R, j = H; i && j;) { if (editOk(ref[i - 1].t, hyp[j - 1]) && m[i][j] === m[i - 1][j - 1] + 1) { ok.add(i - 1); i--; j--; } else if (m[i - 1][j] >= m[i][j - 1]) i--; else j--; }
+  const wordOk = words.map((_, wi) => ref.filter((r) => r.wi === wi).every((r) => ok.has(ref.indexOf(r))));
+  const score = R ? Math.round((m[R][H] / Math.max(R, H)) * 100) : 0;
+  const html = words.map((w, wi) => `<span class="${wordOk[wi] ? "dw-ok" : "dw-miss"}">${esc(w)}</span>`).join(" ");
+  return { score, html, missed: words.filter((_, wi) => !wordOk[wi]).map((w) => w.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9'’]+$/g, "")).filter(Boolean) };
+}
+/** 한 문장 듣고 채점: { score, text, html, via } (소리가 없으면 null) */
+async function hearSentence(target, out) {
+  const canRec = navigator.mediaDevices?.getUserMedia && window.MediaRecorder;
+  if (S.settings.stt !== "browser" && sttOffToday !== today() && canRec) {
+    let rec;
+    try { rec = await startRecorder(); } catch (e) { out.textContent = e.message; return null; }
+    const maxMs = Math.min(20000, 4000 + toks(target).length * 700);
+    const heard = await autoStop(rec, out, maxMs);
+    const { blob } = await rec.stop();
+    if (!heard) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return null; }
+    out.innerHTML = '<span class="spinner"></span> AI가 받아쓰는 중…';
+    try {
+      const d = await transcribe(blob, "shadow");
+      if (!d.text) { out.textContent = "말소리를 알아듣지 못했어요. 조금 더 크게 다시 해 보세요."; return null; }
+      return { ...wordDiff(target, d.text), text: d.text, via: "AI" };
+    } catch (e) {
+      if (e.status === 429) { sttOffToday = today(); toast("오늘 AI 채점 한도를 다 써서 브라우저 인식으로 바꿀게요. 한 번 더 말해 주세요", 3500); }
+      else toast("AI 받아쓰기가 안 돼서 브라우저 인식으로 들을게요. 한 번 더 말해 주세요", 3000);
+    }
+  }
+  out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
+  const alts = await listen();
+  if (!alts.length) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return null; }
+  const best = alts.map((a) => ({ a, d: wordDiff(target, a) })).sort((x, y) => y.d.score - x.d.score)[0];
+  return { ...best.d, text: best.a, via: "브라우저" };
+}
+const hearHtml = (r) => `<div class="dwords">${r.html}</div><div class="small muted">들린 말(${r.via}): “${esc(r.text)}”${r.missed.length ? ` · 다시 들어 볼 단어: <b>${r.missed.slice(0, 4).map(esc).join(", ")}</b>` : ""}</div>`;
 
 // ── 원문 대조: 단어 정렬(LCS) ──
 const ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" ");
@@ -1044,9 +1111,12 @@ $("#codeChip").onclick = () => {
     <div class="label">발음 기본값</div><div class="seg" id="accSeg">${[["en-US", "미국"], ["en-GB", "영국"], ["en-NZ", "뉴질랜드"], ["en-AU", "호주"]].map(([v, l]) => `<button data-v="${v}" class="${S.settings.accent === v ? "on" : ""}">${l}</button>`).join("")}</div>
     <div class="label">말하기 속도</div><div class="seg" id="rateSeg">${[[0.8, "천천히"], [0.95, "보통"], [1.1, "빠르게"]].map(([v, l]) => `<button data-v="${v}" class="${S.settings.rate == v ? "on" : ""}">${l}</button>`).join("")}</div>
     <p class="small muted">기기에 뉴질랜드 음성이 없으면 비슷한 영어 음성으로 재생돼요.</p>
+    <div class="label">따라 말하기 채점</div><div class="seg" id="sttSeg">${[["ai", "AI 받아쓰기(정확)"], ["browser", "브라우저(빠름)"]].map(([v, l]) => `<button data-v="${v}" class="${(S.settings.stt || "ai") === v ? "on" : ""}">${l}</button>`).join("")}</div>
+    <p class="small muted">AI 받아쓰기는 녹음을 Whisper로 받아 적어 단어마다 맞음·빠짐을 보여 줘요. 하루 한도를 넘으면 자동으로 브라우저 인식을 써요.</p>
     <button class="btn big" id="syncNow" style="margin-top:6px">지금 동기화</button>
     <button class="btn big ghost" id="logout" style="margin-top:8px">다른 코드로 바꾸기</button>`);
   $("#accSeg").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; S.settings.accent = b.dataset.v; save(); [...$("#accSeg").children].forEach((x) => x.classList.toggle("on", x === b)); speak("Kia ora, how's it going?"); };
+  $("#sttSeg").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; S.settings.stt = b.dataset.v; save(); [...$("#sttSeg").children].forEach((x) => x.classList.toggle("on", x === b)); };
   $("#rateSeg").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; S.settings.rate = +b.dataset.v; save(); [...$("#rateSeg").children].forEach((x) => x.classList.toggle("on", x === b)); };
   $("#syncNow").onclick = async () => { dirty = true; await push(); toast($("#syncDot").title); };
   $("#logout").onclick = async () => { if (dirty) await push(); lsDel("et:code"); location.hash = ""; location.reload(); };
@@ -1270,12 +1340,9 @@ function renderSpeak(v) {
       const i = +sh.dataset.shadow, out = $("#sr" + i);
       out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
       try {
-        const alts = await listen();
-        if (!alts.length) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return; }
-        const best = alts.map((a) => [a, similarity(a, sc.lines[i].en)]).sort((a, b) => b[1] - a[1])[0];
-        out.innerHTML = `<span class="tag ${best[1] >= 80 ? "good" : "bad"}">${best[1]}%</span> <span class="muted">들린 말: “${esc(best[0])}”</span>`;
-        const rec = recordSpeak(sc, i, best[1]);
-        out.innerHTML += ` <span class="small muted">· 최고 ${rec.best}% · ${rec.n}회</span>`;
+        const r = await hearSentence(sc.lines[i].en, out); if (!r) return;
+        const best = [r.text, r.score], rec = recordSpeak(sc, i, r.score);
+        out.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span> <span class="small muted">최고 ${rec.best}% · ${rec.n}회</span>${hearHtml(r)}`;
         if (best[1] >= 80) { log("shadow"); if (sc.lines[i].key) exprMark(sc.lines[i].key, sc.lines[i].keyKo, "spoken"); } else toast("천천히 한 단어씩 또박또박 다시 해 보세요");
       } catch (err) { out.textContent = err.message; }
     }
@@ -1386,9 +1453,9 @@ function shadowOne(box, it, head, sc, idx, onNext) {
   $("#sMic", box).onclick = async () => {
     const out = $("#sRes", box); out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
     try {
-      const alts = await listen(); if (!alts.length) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return; }
-      const score = Math.max(...alts.map((a) => similarity(a, it.en))); best = Math.max(best, score);
-      out.innerHTML = `<span class="tag ${score >= 80 ? "good" : "bad"}">${score}%</span> ${score >= 80 ? "좋아요! 👏" : "한 단어씩 또박또박 다시 해 보세요"}`;
+      const r = await hearSentence(it.en, out); if (!r) return;
+      const score = r.score; best = Math.max(best, score);
+      out.innerHTML = `<span class="tag ${score >= 80 ? "good" : "bad"}">${score}%</span> ${score >= 80 ? "좋아요! 👏" : "빨간 단어를 들어 보고 다시 해 보세요"}${hearHtml(r)}`;
       if (sc && idx != null) recordSpeak(sc, idx, score);
       if (score >= 80) { log("shadow"); if (it.key) exprMark(it.key, it.keyKo, "spoken"); }
     } catch (e) { out.textContent = e.message; }
@@ -1668,11 +1735,10 @@ function renderVault(v) {
         const r = S.speak[b.dataset.pr], out = document.getElementById("pr-" + b.dataset.pr); if (!r) return;
         out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
         try {
-          const alts = await listen(); if (!alts.length) { out.textContent = "소리가 안 들렸어요. 다시 눌러 주세요."; return; }
-          const sc = allScenarios().find((x) => x.id === r.sc), i = r.i;
-          const best = Math.max(...alts.map((a) => similarity(a, r.en)));
-          if (sc && sc.lines[i]) { const rec = recordSpeak(sc, i, best); out.innerHTML = `<span class="tag ${best >= 80 ? "good" : "bad"}">${best}%</span> 최고 ${rec.best}% · ${rec.n}회`; if (best >= 80) log("shadow"); }
-          else out.innerHTML = `<span class="tag">${best}%</span>`;
+          const h = await hearSentence(r.en, out); if (!h) return;
+          const sc = allScenarios().find((x) => x.id === r.sc), i = r.i, best = h.score;
+          if (sc && sc.lines[i]) { const rec = recordSpeak(sc, i, best); out.innerHTML = `<span class="tag ${best >= 80 ? "good" : "bad"}">${best}%</span> 최고 ${rec.best}% · ${rec.n}회${hearHtml(h)}`; if (best >= 80) log("shadow"); }
+          else out.innerHTML = `<span class="tag">${best}%</span>${hearHtml(h)}`;
         } catch (err) { out.textContent = err.message; }
       };
     }

@@ -299,3 +299,9 @@ html, body { overflow-x: hidden; }
 .wrrow b { color: var(--text); }
 .wrtips { margin: 10px 0 0; padding-left: 18px; line-height: 1.55; }
 .wrtips li + li { margin-top: 4px; }
+/* 따라 말하기 채점: 단어별 맞음/빠짐 */
+.dwords { margin: 6px 0 2px; font-size: 16px; line-height: 1.6; }
+.dw-ok { color: var(--good); }
+.dw-miss { color: var(--bad); text-decoration: underline wavy; text-underline-offset: 3px; font-weight: 600; }
+.recdot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); margin-right: 4px; vertical-align: 0; animation: recpulse 1s infinite; }
+@keyframes recpulse { 50% { opacity: .3; } }

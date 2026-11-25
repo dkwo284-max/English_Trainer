@@ -363,6 +363,8 @@ async function handleAI(request, env) {
 // ── 받아쓰기(STT): 독백 녹음을 Whisper 로 글자로 ─────────────
 // 원문을 힌트로 주지 않는다(들은 그대로 적어야 채점이 정직함). 녹음 파일은 저장하지 않음.
 const STT_MAX_BYTES = 6_000_000;   // 16kHz 모노 WAV 약 3분
+const SHADOW_MAX_BYTES = 700_000;  // 약 20초
+const SHADOW_PER_CODE_PER_DAY = 150, SHADOW_TOTAL_PER_DAY = 800;
 function b64(buf) {
   const u = new Uint8Array(buf); let s = "";
   for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
@@ -376,7 +378,14 @@ async function handleSTT(request, env) {
   const buf = await request.arrayBuffer();
   if (buf.byteLength < 1000) return json({ error: "녹음이 너무 짧아요" }, 400);
   if (buf.byteLength > STT_MAX_BYTES) return json({ error: "녹음이 너무 길어요 (3분 이내)" }, 413);
-  if (env.STORE) {
+  // 따라 말하기(한 문장, 20초 이내)는 자주 쓰므로 AI 한도와 따로 센다
+  const short = request.headers.get("x-kind") === "shadow";
+  if (short && buf.byteLength > SHADOW_MAX_BYTES) return json({ error: "한 문장은 20초 이내로 말해 주세요" }, 413);
+  if (env.STORE && short) {
+    const day = nzToday(), ck = await codeKey(code, env);
+    if (!(await bump(env, `stt:${day}:total`, SHADOW_TOTAL_PER_DAY))) return json({ error: "오늘 앱 전체 따라 말하기 채점 한도를 다 썼습니다" }, 429);
+    if (!(await bump(env, `stt:${day}:${ck}`, SHADOW_PER_CODE_PER_DAY))) return json({ error: `오늘 AI 따라 말하기 채점 한도(${SHADOW_PER_CODE_PER_DAY}회)를 다 썼습니다` }, 429);
+  } else if (env.STORE) {
     const day = nzToday(), ck = await codeKey(code, env);
     if (!(await bump(env, `ai:${day}:total`, AI_TOTAL_PER_DAY))) return json({ error: "오늘 앱 전체 AI 한도를 다 썼습니다" }, 429);
     if (!(await bump(env, `ai:${day}:${ck}`, AI_PER_CODE_PER_DAY))) return json({ error: `오늘 AI 사용 한도(${AI_PER_CODE_PER_DAY}회)를 다 썼습니다` }, 429);

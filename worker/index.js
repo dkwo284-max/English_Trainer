@@ -95,6 +95,32 @@ async function handleSummary(request, env) {
     speakToday: h.speak || 0, monoToday: h.mono || 0, streak, lastDay: days[0] || null });
 }
 
+// ── 다른 개인 앱(같은 github.io 주소)의 진도 동기화: 같은 학습 코드로 기기 간 이어하기. 앱별 키 a:<app>:<코드 해시>, 200KB 이하 ──
+const APPSTATE_APPS = new Set(["nzdrive"]);
+async function handleAppState(request, env) {
+  const origin = request.headers.get("origin") || "";
+  const cors = origin === HUB_ORIGIN ? { "access-control-allow-origin": HUB_ORIGIN, "access-control-allow-headers": "x-code, content-type", "access-control-allow-methods": "GET, PUT", "vary": "origin" } : {};
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "access-control-max-age": "86400" } });
+  const out = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...cors } });
+  const app = new URL(request.url).searchParams.get("app") || "";
+  if (!APPSTATE_APPS.has(app)) return out({ error: "app" }, 400);
+  if (!env.STORE) return out({ error: "kv" }, 500);
+  const code = await readCode(request);
+  if (!code) return out({ error: "코드는 4~24자(영문·숫자·한글·-_)" }, 400);
+  const key = `a:${app}:` + (await codeKey(code, env));
+  if (request.method === "GET") { const raw = await env.STORE.get(key); return out({ state: raw ? JSON.parse(raw) : null }); }
+  if (request.method === "PUT") {
+    const body = await request.text();
+    if (body.length > 200_000) return out({ error: "too large" }, 413);
+    let st; try { st = JSON.parse(body); } catch { return out({ error: "json" }, 400); }
+    if (!st || typeof st !== "object") return out({ error: "json" }, 400);
+    st._saved = new Date().toISOString();
+    await env.STORE.put(key, JSON.stringify(st));
+    return out({ ok: true, saved: st._saved });
+  }
+  return out({ error: "method" }, 405);
+}
+
 // ── AI ─────────────────────────────────────────────────────
 const SYS = `You are a friendly English speaking coach for a Korean adult living in Auckland, New Zealand.
 Write natural, spoken, everyday English that any native speaker (NZ, US, UK, AU) understands instantly.
@@ -475,6 +501,7 @@ export default {
       if (pathname === "/api/dict") return await handleDict(request);
       if (pathname === "/api/stt") return await handleSTT(request, env);
       if (pathname === "/api/summary") return await handleSummary(request, env);
+      if (pathname === "/api/appstate") return await handleAppState(request, env);
       if (pathname === "/api/health") return json({ ok: true, kv: !!env.STORE, ai: !!env.GEMINI_API_KEY, wai: !!env.AI });
     } catch (e) {
       return json({ error: "서버 오류: " + e.message }, 500);

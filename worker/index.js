@@ -167,9 +167,16 @@ JSON: {"score":0-100,"ok":true if score>=80,"corrected":"minimal correction of t
   roleplay: ({ scenario, roles, history, mine }) => `Live spoken role-play for a Korean adult learner living in Auckland. Situation: "${scenario}". Roles: ${roles}. YOU play B; the learner plays A.
 ${history ? "Conversation so far:\n" + history + "\n" : "The conversation has not started: B speaks first.\n"}${mine ? 'The learner (A) just said (speech-to-text, may lack punctuation): "' + mine + '"\n' : ""}
 Rules: B's reply is ONE natural spoken turn (1-2 short sentences, 6-25 words) that reacts to what A said and moves the situation forward, light Kiwi flavour, ends with something A can answer. If the situation has naturally finished (about 6-8 exchanges), wrap up politely and set "done": true.
-${mine ? 'Also judge A\'s line: "ok" true if it is natural, correct spoken English that fits (ignore missing punctuation/capitals and small speech-to-text slips). "better": how a native would say A\'s line in this situation (same meaning, keep it close; same as A\'s line with punctuation if already fine). "betterKo": its natural Korean meaning. "why": one short Korean sentence on the main fix or praise.' : 'There is no learner line yet: set "fix" to null.'}
 "model": ONE model answer the learner (A) could say right after B's reply: natural spoken English, easy words, 5-16 words, a real answer that moves the situation forward (not a question back unless natural), in the learner's role. "modelKo": its natural Korean meaning (구어 해요체). If "done" is true, set both to "".
-JSON: {"fix":${mine ? '{"ok":true,"better":"...","betterKo":"...","why":"..."}' : "null"},"reply":"B's next line","ko":"natural Korean meaning of reply","hint":"a short English phrase A could start their answer with","model":"A's model answer","modelKo":"Korean meaning of the model answer","done":false}`,
+JSON: {"reply":"B's next line","ko":"natural Korean meaning of reply","hint":"a short English phrase A could start their answer with","model":"A's model answer","modelKo":"Korean meaning of the model answer","done":false}`,
+
+  rp_check: ({ scenario, history, mine }) => `You are a strict but kind English teacher checking ONE spoken line from a Korean adult learner living in Auckland. Situation: "${scenario}".
+${history ? "Conversation so far:\n" + history + "\n" : ""}The learner said (typed or speech-to-text): "${mine}"
+Check EVERY clause one by one for: verb tense and tense consistency (e.g. "We went to the park and enjoy the air" is WRONG: should be "enjoyed"), subject-verb agreement, articles (a/an/the/none), prepositions, plural/countable nouns, word order, missing/extra words, word choice, and whether a native speaker would actually say it.
+Do NOT excuse tense, agreement, article or preposition mistakes as speech-to-text slips. Only ignore capitalisation, punctuation and obvious homophone mis-hearings. If there is any real error, "grammar" must be false and "errors" must list each one. Do not invent errors in a correct sentence.
+"errors": each {"wrong":"the exact wrong words from the learner's line","right":"the corrected words","note":"Korean, one short sentence why"}; [] if none.
+"better": the learner's line corrected with MINIMAL changes (keep their words and meaning; add punctuation); identical to the input apart from punctuation/capitalisation if there are no errors. "betterKo": natural Korean meaning of better (구어 해요체). "natural": how a native would most naturally say the same thing in this situation (may differ more from the original; same as better if already natural). "score": 1-10 how natural it sounds spoken. "why": 1-2 short Korean sentences: the main problem, or praise if fine. "types": up to 3 of exactly these labels for the learner's mistakes, [] if none: "관사","시제","전치사","어순","어휘 선택","수 일치","구어체 표현","기타".
+JSON: {"grammar":true,"errors":[{"wrong":"...","right":"...","note":"..."}],"better":"...","betterKo":"...","natural":"...","score":8,"why":"...","types":[]}`,
 
   rp_translate: ({ scenario, roles, history, ko }) => `A Korean adult learner living in Auckland is in a live spoken role-play and cannot say their answer in English. Situation: "${scenario}". Roles: ${roles}. The learner plays A.
 ${history ? "Conversation so far:\n" + history + "\n" : ""}The learner wants to say this in Korean (it may be rough, partial or spoken-style): "${ko}"
@@ -305,6 +312,7 @@ const VALID = {
   naturalize: (r) => r && typeof r.best === "string" && r.best,
   correct: (r) => r && typeof r.score === "number",
   roleplay: (r) => r && typeof r.reply === "string" && r.reply.trim(),
+  rp_check: (r) => r && typeof r.grammar === "boolean" && typeof r.better === "string" && r.better.trim() && Array.isArray(r.errors),
   rp_translate: (r) => r && typeof r.en === "string" && /[A-Za-z]/.test(r.en) && !/[가-힣]/.test(r.en),
   weak_drill: (r) => r && Array.isArray(r.items) && r.items.filter((i) => i && i.ko && i.en).length >= 4,
   review_add: (r) => r && Array.isArray(r.items) && r.items.length && r.items.every((i) => i && i.en && i.ko && i.natural),

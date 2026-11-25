@@ -848,10 +848,23 @@ function startRoleplay(sc, custom) {
       <div class="small muted" id="rpKoHint" style="margin-top:4px">🇰🇷 영어가 안 나오면 <b>한국어로 쓰세요</b>. 지금 상황에 맞는 영어로 바꿔 주고, 복습 문장에도 자동으로 저장해요.</div></div>`);
   const log = $("#rpLog"), out = $("#rpOut");
   const hist = () => rp.lines.map((l) => `${l.sp}: ${l.en}`).join("\n");
+  // 내 문장 점검 결과: 문법이 틀리면 틀린 부분 → 고친 부분을 짚고, 통과여도 더 자연스러운 표현이 있으면 같이 보여 줌
+  const fixHtml = (l) => {
+    if (l.assist) return "";
+    if (l.fixErr) return `<div class="small muted">⚠ 이 문장은 점검하지 못했어요 (${esc(l.fixErr)})</div>`;
+    if (!l.fix) return `<div class="small muted"><span class="spinner"></span> 문법 점검 중…</div>`;
+    const f = l.fix;
+    if (f.ok) return `<div class="small" style="color:var(--good)">✓ 문법은 맞아요${f.score ? ` · 자연스러움 ${f.score}/10` : ""}${f.why ? " — " + esc(f.why) : ""}</div>${f.natural && norm(f.natural) !== norm(l.en) ? `<div class="small muted">더 자연스럽게: ${esc(f.natural)} ${sayBtns(f.natural)}</div>` : ""}`;
+    return `<div class="keybox fixbox"><div class="small" style="color:var(--bad);font-weight:700">✗ 고칠 곳이 있어요</div>
+      ${(f.errors || []).map((e) => `<div class="small"><span class="dw-miss">${esc(e.wrong)}</span> → <b style="color:var(--good)">${esc(e.right)}</b>${e.note ? ` <span class="muted">· ${esc(e.note)}</span>` : ""}</div>`).join("")}
+      <div style="margin-top:4px"><b>이렇게 말하면</b> ${esc(f.better)} ${sayBtns(f.better)}</div>
+      ${f.natural && norm(f.natural) !== norm(f.better) ? `<div class="small muted">원어민은 보통: ${esc(f.natural)} ${sayBtns(f.natural)}</div>` : ""}
+      <div class="small muted">${esc(f.why || "")}</div></div>`;
+  };
   const draw = () => {
     log.innerHTML = rp.lines.map((l, i) => l.sp === "B"
       ? `<div class="rpb"><div class="en">${tappable(l.en)}</div><div class="ko small muted">${esc(l.ko || "")}</div><div class="acts">${sayBtns(l.en)}${l.hint && i === rp.lines.length - 1 && !rp.done ? `<span class="small muted">💡 ${esc(l.hint)}…</span>` : ""}</div>${i === rp.lines.length - 1 && !rp.done ? helpHtml(l) : ""}</div>`
-      : `<div class="rpa"><div class="en">${esc(l.en)}</div>${l.assist === "ko" ? `<div class="small muted">🇰🇷 “${esc(l.ko || "")}” → 영어로 바꿔 답했어요</div>` : l.assist ? `<div class="small muted">🆘 모범답안${l.assist === "said" ? "을 따라 말했어요" : "으로 답했어요"}</div>` : ""}${l.fix ? (l.fix.ok ? `<div class="small" style="color:var(--good)">✓ ${esc(l.fix.why || "자연스러워요")}</div>` : `<div class="keybox"><b>이렇게 말하면</b> ${esc(l.fix.better)} ${sayBtns(l.fix.better)}<div class="small muted">${esc(l.fix.why || "")}</div></div>`) : ""}</div>`).join("");
+      : `<div class="rpa"><div class="en">${esc(l.en)}</div>${l.assist === "ko" ? `<div class="small muted">🇰🇷 “${esc(l.ko || "")}” → 영어로 바꿔 답했어요</div>` : l.assist ? `<div class="small muted">🆘 모범답안${l.assist === "said" ? "을 따라 말했어요" : "으로 답했어요"}</div>` : ""}${fixHtml(l)}</div>`).join("");
     log.scrollTop = log.scrollHeight;
   };
   // 🆘 막혔을 때: 모범답안 → 듣기 → (글자 가리고) 따라 말하기 → 이 답으로 이어가기
@@ -877,11 +890,26 @@ function startRoleplay(sc, custom) {
     if (rp.busy) return; rp.busy = true;
     $("#rpMic").disabled = true;
     rp.help = false; rp.hide = false; rp.helpRes = ""; rp.kt = null; rp.shadowed = false;
-    if (mine) { rp.lines.push({ sp: "A", en: mine, assist: assist || "", ko: assistKo || "" }); rp.turns++; draw(); }
+    if (mine) {
+      const line = { sp: "A", en: mine, assist: assist || "", ko: assistKo || "" };
+      rp.lines.push(line); rp.turns++; draw();
+      if (!line.assist) {   // 모범답안·변환 문장은 이미 올바르니 점검 생략. 내가 직접 말한 문장만 엄격하게 점검(상대 대사와 동시에 진행)
+        const chk = ai("rp_check", { scenario: rp.scenario, history: hist().split("\n").slice(0, -1).join("\n"), mine }, { fresh: true })
+          .then((f) => {
+            const errs = (Array.isArray(f.errors) ? f.errors : []).filter((e) => e && e.wrong && e.right && norm(e.wrong) !== norm(e.right));
+            // 문법 오류가 하나라도 있으면 통과가 아님(모델이 grammar:true 라고 해도), 자연스러움이 7 이하여도 고칠 문장으로 취급
+            const ok = errs.length === 0 && f.grammar !== false && !(Number(f.score) <= 7);
+            line.fix = { ok, errors: errs, better: String(f.better || mine), betterKo: f.betterKo || "", natural: f.natural || "", score: Number(f.score) || 0, why: f.why || "", types: Array.isArray(f.types) ? f.types : [] };
+            if (!ok) recordErrors(line.fix.types.length ? line.fix.types : ["기타"]);
+            save(); draw();
+          })
+          .catch((e) => { line.fixErr = e.message || "AI 오류"; draw(); });
+        (rp.checks = rp.checks || []).push(chk);
+      }
+    }
     out.innerHTML = '<span class="spinner"></span> 상대가 생각 중…';
     try {
       const r = await ai("roleplay", { scenario: rp.scenario, roles: rp.roles, history: hist().split("\n").slice(0, mine ? -1 : undefined).join("\n"), mine: mine || "" }, { fresh: true });
-      if (mine && r.fix) rp.lines[rp.lines.length - 1].fix = r.fix;
       rp.lines.push({ sp: "B", en: r.reply, ko: r.ko, hint: r.hint, model: String(r.model || "").trim(), modelKo: r.modelKo || "" });
       rp.done = !!r.done || rp.turns >= RP_MAX_TURNS;
       draw(); out.textContent = "";
@@ -890,19 +918,21 @@ function startRoleplay(sc, custom) {
     } catch (e) { out.textContent = e.message; if (mine) { rp.lines.pop(); rp.turns--; draw(); } }
     finally { rp.busy = false; if ($("#rpMic")) $("#rpMic").disabled = rp.done; }
   };
-  const finish = () => {
+  const finish = async () => {
     rp.done = true; log_("roleplay");
+    if ((rp.checks || []).length) { out.innerHTML = '<span class="spinner"></span> 마지막 문장까지 점검하는 중…'; await Promise.all(rp.checks); }
     const fixes = rp.lines.filter((l) => l.sp === "A" && l.fix && !l.fix.ok && l.fix.better);
     // 모범답안을 쓴 문장은 내 실력이 아니므로 '자연스러웠어요' 집계에서 빼고, 복습에는 따로 넣을 수 있게 함
     const helped = rp.lines.filter((l) => l.sp === "A" && (l.assist === "model" || l.assist === "said")), koN = rp.lines.filter((l) => l.sp === "A" && l.assist === "ko").length;
-    const own = rp.lines.filter((l) => l.sp === "A" && !l.assist), ownFix = fixes.filter((l) => !l.assist);
+    const own = rp.lines.filter((l) => l.sp === "A" && !l.assist && !l.fixErr), ownFix = fixes.filter((l) => !l.assist);
+    const unchecked = rp.lines.filter((l) => l.sp === "A" && l.fixErr).length;
     const nSave = ownFix.length + helped.length;
-    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 도움을 받아 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${koN ? `<div class="small muted" style="margin:4px 0">🇰🇷 한국어로 말해 영어로 바꾼 ${koN}문장은 복습에 이미 저장했어요.</div>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
+    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 도움을 받아 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${unchecked ? `<div class="small muted" style="margin:4px 0">⚠ ${unchecked}문장은 AI 오류로 점검하지 못했어요.</div>` : ""}${koN ? `<div class="small muted" style="margin:4px 0">🇰🇷 한국어로 말해 영어로 바꾼 ${koN}문장은 복습에 이미 저장했어요.</div>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
     $("#rpMic").disabled = true;
     if ($("#rpSave")) $("#rpSave").onclick = () => {
       let n = 0;
       const fx = ownFix;
-      for (const l of fx) if (addManualReview({ en: l.fix.better, ko: l.fix.betterKo || "", natural: l.fix.better, why: l.fix.why, types: [] }, false) === true) n++;
+      for (const l of fx) if (addManualReview({ en: l.fix.better, ko: l.fix.betterKo || "", natural: l.fix.better, why: (l.fix.errors || []).map((e) => `${e.wrong} → ${e.right}`).join(", ") || l.fix.why, types: l.fix.types || [] }, false) === true) n++;
       for (const l of helped) if (addManualReview({ en: l.en, ko: l.ko || "", natural: l.en, why: "역할극에서 참고한 모범답안", types: [] }, false) === true) n++;
       S.wrong.filter((w) => fx.some((l) => norm(l.fix.better) === norm(w.en))).forEach((w) => { w.src = "역할극"; w.mine = w.mine || fx.find((l) => norm(l.fix.better) === norm(w.en)).en; });
       S.wrong.filter((w) => helped.some((l) => norm(l.en) === norm(w.en))).forEach((w) => { if (!w.mine) w.src = "역할극 모범답안"; });

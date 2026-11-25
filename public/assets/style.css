@@ -329,3 +329,5 @@ html, body { overflow-x: hidden; }
 .rphelp .acts { gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 .rphelp.kt { border-style: solid; background: var(--accent-soft); }
 .rphelp .alt { font-weight: 600; }
+.fixbox { border-left: 3px solid var(--bad); }
+.fixbox .small { line-height: 1.5; }

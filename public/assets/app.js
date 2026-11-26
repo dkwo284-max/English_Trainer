@@ -228,6 +228,19 @@ function addWrong(it, mine, res) {
   Object.assign(w, { mine, why: res?.why || "", natural: res?.natural || "", types: Array.isArray(res?.types) ? res.types : (w.types || []), box: 0, due: addDays(today(), 1), upd: now });
   save();
 }
+/** 따라 말하기·발음 연습에서 80% 미만이면 복습함에 저장. 같은 화면에서 다시 해서 통과하면 방금 새로 넣은 문장은 뺌(원래 있던 복습 문장은 그대로) */
+const shadowAdded = new Map();
+function shadowResult(it, r, src) {
+  const key = norm(it.en); if (!key || !r) return;
+  if (r.score >= 80) {
+    const id = shadowAdded.get(key); if (!id) return;
+    const w = S.wrong.find((x) => x.id === id); if (w && !(w.reps > 0)) { S.wrong = S.wrong.filter((x) => x.id !== id); save(); }
+    shadowAdded.delete(key); return;
+  }
+  const existed = S.wrong.some((x) => !x.del && norm(x.en) === key);
+  addWrong({ ko: it.ko || "", en: it.en, src }, r.text || "", { why: `따라 말하기 ${r.score}%${r.missed && r.missed.length ? ` — 놓친 단어: ${r.missed.slice(0, 5).join(", ")}` : ""}`, types: [] });
+  if (!existed) { const w = S.wrong.find((x) => norm(x.en) === key); if (w) shadowAdded.set(key, w.id); }
+}
 /** 직접 넣은 영어 문장을 복습 목록에 추가(이미 있으면 기록은 두고 뜻·해설만 갱신) */
 function addManualReview(it, useNatural) {
   const en = String(useNatural ? it.natural : it.en).trim(), key = norm(en);
@@ -918,7 +931,13 @@ function startRoleplay(sc, custom) {
             // 문법 오류가 하나라도 있으면 통과가 아님(모델이 grammar:true 라고 해도), 자연스러움이 7 이하여도 고칠 문장으로 취급
             const ok = errs.length === 0 && f.grammar !== false && !(Number(f.score) <= 7);
             line.fix = { ok, errors: errs, better: String(f.better || mine), betterKo: f.betterKo || "", natural: f.natural || "", score: Number(f.score) || 0, why: f.why || "", types: Array.isArray(f.types) ? f.types : [] };
-            if (!ok) recordErrors(line.fix.types.length ? line.fix.types : ["기타"]);
+            if (!ok) {
+              recordErrors(line.fix.types.length ? line.fix.types : ["기타"]);
+              const added = addManualReview({ en: line.fix.better, ko: line.fix.betterKo || "", natural: line.fix.better, why: line.fix.errors.map((e) => `${e.wrong} → ${e.right}`).join(", ") || line.fix.why, types: line.fix.types }, false);
+              const w = S.wrong.find((x) => !x.del && norm(x.en) === norm(line.fix.better));
+              if (w) { if (added === true) w.src = "역할극"; w.mine = w.mine || mine; save(); }
+              line.saved = true;
+            }
             save(); draw();
           })
           .catch((e) => { line.fixErr = e.message || "AI 오류"; draw(); });
@@ -951,17 +970,8 @@ function startRoleplay(sc, custom) {
     const own = rp.lines.filter((l) => l.sp === "A" && !l.assist && !l.fixErr), ownFix = fixes.filter((l) => !l.assist);
     const unchecked = rp.lines.filter((l) => l.sp === "A" && l.fixErr).length;
     const nSave = ownFix.length + helped.length;
-    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 도움을 받아 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${unchecked ? `<div class="small muted" style="margin:4px 0">⚠ ${unchecked}문장은 AI 오류로 점검하지 못했어요.</div>` : ""}${rp.targets.length ? `<div class="small" style="margin:4px 0">🎯 목표 표현 ${tgUsed.length}/${rp.targets.length}개 사용${tgUsed.length ? `: ${tgUsed.map((x) => esc(x.e) + (rp.used[x.id] === "assist" ? "(도움)" : "")).join(", ")}` : " — 다음엔 하나씩 써 봐요"}</div>` : ""}${koN ? `<div class="small muted" style="margin:4px 0">🇰🇷 한국어로 말해 영어로 바꾼 ${koN}문장은 복습에 이미 저장했어요.</div>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
+    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 도움을 받아 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${unchecked ? `<div class="small muted" style="margin:4px 0">⚠ ${unchecked}문장은 AI 오류로 점검하지 못했어요.</div>` : ""}${rp.targets.length ? `<div class="small" style="margin:4px 0">🎯 목표 표현 ${tgUsed.length}/${rp.targets.length}개 사용${tgUsed.length ? `: ${tgUsed.map((x) => esc(x.e) + (rp.used[x.id] === "assist" ? "(도움)" : "")).join(", ")}` : " — 다음엔 하나씩 써 봐요"}</div>` : ""}${koN ? `<div class="small muted" style="margin:4px 0">🇰🇷 한국어로 말해 영어로 바꾼 ${koN}문장은 복습에 이미 저장했어요.</div>` : ""}${nSave ? `<div class="small" style="margin:4px 0">📥 ${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습함에 저장했어요. 다음에 한국어를 보고 다시 말해 봐요.</div>` : ""}</div>`;
     $("#rpMic").disabled = true;
-    if ($("#rpSave")) $("#rpSave").onclick = () => {
-      let n = 0;
-      const fx = ownFix;
-      for (const l of fx) if (addManualReview({ en: l.fix.better, ko: l.fix.betterKo || "", natural: l.fix.better, why: (l.fix.errors || []).map((e) => `${e.wrong} → ${e.right}`).join(", ") || l.fix.why, types: l.fix.types || [] }, false) === true) n++;
-      for (const l of helped) if (addManualReview({ en: l.en, ko: l.ko || "", natural: l.en, why: "역할극에서 참고한 모범답안", types: [] }, false) === true) n++;
-      S.wrong.filter((w) => fx.some((l) => norm(l.fix.better) === norm(w.en))).forEach((w) => { w.src = "역할극"; w.mine = w.mine || fx.find((l) => norm(l.fix.better) === norm(w.en)).en; });
-      S.wrong.filter((w) => helped.some((l) => norm(l.en) === norm(w.en))).forEach((w) => { if (!w.mine) w.src = "역할극 모범답안"; });
-      save(); $("#rpSave").disabled = true; $("#rpSave").textContent = `✓ ${n}개 추가됨`;
-    };
   };
   log.onclick = async (e) => {
     const b = e.target.closest("[data-help]"); if (!b || rp.busy || rp.done) return;
@@ -973,7 +983,14 @@ function startRoleplay(sc, custom) {
     if (k === "hide") { rp.hide = !rp.hide; draw(); return; }
     if (k === "usealt" && rp.kt) { if (rp.kt.rowId) { S.wrong = S.wrong.filter((w) => w.id !== rp.kt.rowId); }   // 고른 표현만 복습에 남김
       rp.kt.en = rp.kt.alt; rp.kt.alt = ""; rp.kt.back = ""; rp.helpRes = ""; rp.shadowed = false; saveKt(rp.kt); draw(); speak(rp.kt.en); return; }
-    if (k === "use") { const said = rp.shadowed; rp.shadowed = false; step(last.model, rp.kt ? "ko" : said ? "said" : "model", last.modelKo); return; }
+    if (k === "use") {
+      const said = rp.shadowed; rp.shadowed = false;
+      if (!rp.kt) {   // 스스로 말하지 못하고 모범답안으로 답한 문장 → 복습함
+        const added = addManualReview({ en: last.model, ko: last.modelKo || "", natural: last.model, why: "역할극에서 말하지 못해 모범답안으로 답한 문장", types: [] }, false);
+        const w = S.wrong.find((x) => !x.del && norm(x.en) === norm(last.model)); if (w && added === true) { w.src = "역할극 모범답안"; save(); }
+      }
+      step(last.model, rp.kt ? "ko" : said ? "said" : "model", last.modelKo); return;
+    }
     if (k === "shadow") {
       const o = $("#rpHelpOut"); if (!o) return;
       o.innerHTML = '<span class="spinner"></span> 말해 보세요…';
@@ -1236,6 +1253,16 @@ async function finishRec() {
     for (const r of missed.slice(0, 20)) { const x = S.monoWeak[r.t] || (S.monoWeak[r.t] = { n: 0 }); x.n++; x.at = now; x.m = m.id; }
     for (const r of al.ref) if (r.ok && S.monoWeak[r.t]) { S.monoWeak[r.t].hit = (S.monoWeak[r.t].hit || 0) + 1; }
     const keys = Object.keys(S.monoWeak); if (keys.length > 120) keys.sort((a, b) => (S.monoWeak[a].at || "").localeCompare(S.monoWeak[b].at || "")).slice(0, keys.length - 120).forEach((k) => delete S.monoWeak[k]);
+    if (mode !== "erase:cue" && al.matched) {
+      const lastLi = Math.max(...al.ref.filter((r) => r.ok).map((r) => r.li)); let n = 0;
+      for (let li = 0; li <= lastLi && n < 6; li++) {
+        const rs = al.ref.filter((r) => r.li === li); if (!rs.length) continue;
+        const a2 = rs.filter((r) => r.ok).length / rs.length; if (a2 >= 0.8) continue;
+        const miss = rs.filter((r) => !r.ok && r.t.length >= 3 && !STOP.has(r.t)).map((r) => r.t);
+        addWrong({ ko: m.lines[li].ko || "", en: monoText(m.lines[li].en), src: "독백 · " + m.title }, "", { why: `독백 낭독 ${Math.round(a2 * 100)}%${miss.length ? ` — 놓친 단어: ${miss.slice(0, 5).join(", ")}` : ""}`, types: [] }); n++;
+      }
+      if (n) monoLast.saved = n;
+    }
     rec.acc = acc; rec.wpm = wpm; await recDB.put(rec);
     markMonoDone(m, { id, at: now, d: today(), m: m.id, t: m.title, mode, dur: Math.round(dur), wpm, acc });
   } catch (e) {
@@ -1254,6 +1281,7 @@ function showMonoResult(m) {
   else {
     const byLine = m.lines.map((_, li) => r.al.ref.filter((x) => x.li === li));
     body = `<div class="stats" style="margin:8px 0"><div class="stat"><b>${r.acc}%</b><span>완독률</span></div><div class="stat"><b>${r.wpm}</b><span>분당 단어</span></div><div class="stat"><b>${Math.round(r.dur)}초</b><span>걸린 시간</span></div></div>
+      ${r.saved ? `<p class="small" style="margin:0 0 6px">📥 단어를 많이 놓친 ${r.saved}문장을 복습함에 저장했어요.</p>` : ""}
       <p class="small muted" style="margin:0 0 6px">${r.acc >= 90 ? "아주 좋아요! 거의 다 또렷하게 들렸어요 👏" : r.acc >= 70 ? "좋아요. 빨간 단어만 따로 몇 번 소리 내 보세요." : "빨간 단어가 잘 안 들렸어요. ② 같이 읽기로 한 번 더 듣고 다시 해 보세요."} ${r.wpm < 100 ? "속도는 조금 더 붙여도 돼요." : r.wpm > 165 ? "조금 천천히 또박또박 해도 돼요." : ""}</p>
       <div class="mdiff">${byLine.map((ws) => `<p>${ws.filter((x) => x.w).map((x) => `<span class="${x.ok ? "ok" : "miss"}">${esc(x.w)}</span>`).join(" ")}</p>`).join("")}</div>
       <details class="small muted"><summary>들린 그대로 보기</summary><p>${esc(r.text || "(들린 말 없음)")}</p></details>`;
@@ -1530,7 +1558,13 @@ function curMark(x, ok) {
     if (ok) { c.box = (c.box || 0) + 1; if (c.box >= CUR_GAPS.length) { c.st = "learned"; c.due = ""; } else c.due = addDays(today(), CUR_GAPS[c.box]); }
     else { c.box = 0; c.due = addDays(today(), 1); }
   } else if (!ok) { c.st = "train"; c.box = 0; c.due = today(); }   // 테스트에서 틀리면 다시 훈련
-  S.cur.items[x.id] = c; log("cur"); save();
+  S.cur.items[x.id] = c; log("cur");
+  if (!ok) curToReview(x); else save();
+}
+function curToReview(x) {
+  const existed = S.wrong.some((w) => !w.del && norm(w.en) === norm(x.e));
+  addWrong({ ko: x.k, en: x.e, src: "커리큘럼 · " + x.unit.t }, "", { why: `예: ${x.x}${x.n ? " · " + x.n : ""}`, types: [] });
+  if (!existed) { const w = S.wrong.find((y) => norm(y.en) === norm(x.e)); if (w) w.natural = x.x; save(); }
 }
 const curHint = (e) => e.replace(/[A-Za-z']+/g, (w) => w[0] + "_".repeat(Math.max(1, w.length - 1)));
 function curEta() {
@@ -1600,7 +1634,7 @@ function curSession(queueIn, title) {
            <button class="btn" id="curNext" style="width:100%;margin-top:8px">다음 ›</button></div>`}`;
       speak(x.x);
       $("#curNext").onclick = () => { i++; step(); };
-      const un = $("#curUnsure"); if (un) un.onclick = () => { const c = S.cur.items[x.id]; c.st = "train"; c.box = 0; c.due = addDays(today(), 1); c.at = new Date().toISOString(); save(); un.outerHTML = '<span class="small muted">훈련 목록에 넣었어요 (내일 복습)</span>'; };
+      const un = $("#curUnsure"); if (un) un.onclick = () => { const c = S.cur.items[x.id]; c.st = "train"; c.box = 0; c.due = addDays(today(), 1); c.at = new Date().toISOString(); curToReview(x); un.outerHTML = '<span class="small muted">훈련 목록에 넣었어요 (내일 복습)</span>'; };
       if (!ok && kind !== "test") {
         $("#curListen").onclick = () => speak(x.x);
         $("#curShadow").onclick = async () => { const o = $("#curT1"); const r = await hearSentence(x.x, o); if (!r) return; o.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span>${hearHtml(r)}`; if (r.score >= 80 || ++tries >= 2) $("#curT2wrap").hidden = false; };
@@ -1618,6 +1652,7 @@ function curSession(queueIn, title) {
         if (!settled) return reveal(true);
         if (lastOk) return;
         if (prev) S.cur.items[x.id] = prev; else delete S.cur.items[x.id];
+        { const w = S.wrong.find((y) => !y.del && norm(y.en) === norm(x.e) && (y.src || "").startsWith("커리큘럼") && !(y.reps > 0) && (y.at || "").slice(0, 10) === today()); if (w) S.wrong = S.wrong.filter((y) => y.id !== w.id); save(); }   // 잘못 들은 거라 복습함에서도 뺌
         res.bad--; settled = false; reveal(true); $("#curSttOk")?.remove();
       };
       if (tries >= 2) reveal(false);
@@ -1806,7 +1841,8 @@ function renderSpeak(v) {
         const r = await hearSentence(sc.lines[i].en, out); if (!r) return;
         const best = [r.text, r.score], rec = recordSpeak(sc, i, r.score);
         out.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span> <span class="small muted">최고 ${rec.best}% · ${rec.n}회</span>${hearHtml(r)}`;
-        if (best[1] >= 80) { log("shadow"); if (sc.lines[i].key) exprMark(sc.lines[i].key, sc.lines[i].keyKo, "spoken"); } else toast("천천히 한 단어씩 또박또박 다시 해 보세요");
+        if (best[1] >= 80) { log("shadow"); if (sc.lines[i].key) exprMark(sc.lines[i].key, sc.lines[i].keyKo, "spoken"); } else toast("복습함에 저장했어요. 천천히 한 단어씩 또박또박 다시 해 보세요");
+        shadowResult(sc.lines[i], r, "따라 말하기 · " + sc.title.split(" — ")[0]);
       } catch (err) { out.textContent = err.message; }
     }
   };
@@ -1911,19 +1947,19 @@ function shadowOne(box, it, head, sc, idx, onNext) {
     <div class="row wrap" style="margin-top:8px"><button class="btn" id="sPlay">🔊 듣기</button><button class="btn" id="sSlow">🐢 느리게</button><button class="btn primary" id="sMic" style="flex:1">🎙 따라 말하기</button></div>
     <div id="sRes" class="shadow-res" style="margin-top:8px"></div>
     <div class="row" style="margin-top:10px"><button class="btn primary big" id="sNext">다음 단계 →</button></div>`;
-  let best = 0;
+  let best = 0, bestR = null;
   $("#sPlay", box).onclick = () => speak(it.en); $("#sSlow", box).onclick = () => speak(it.en, undefined, 0.7);
   $("#sMic", box).onclick = async () => {
     const out = $("#sRes", box); out.innerHTML = '<span class="spinner"></span> 말해 보세요…';
     try {
       const r = await hearSentence(it.en, out); if (!r) return;
-      const score = r.score; best = Math.max(best, score);
+      const score = r.score; if (score >= best) bestR = r; best = Math.max(best, score);
       out.innerHTML = `<span class="tag ${score >= 80 ? "good" : "bad"}">${score}%</span> ${score >= 80 ? "좋아요! 👏" : "빨간 단어를 들어 보고 다시 해 보세요"}${hearHtml(r)}`;
       if (sc && idx != null) recordSpeak(sc, idx, score);
       if (score >= 80) { log("shadow"); if (it.key) exprMark(it.key, it.keyKo, "spoken"); }
     } catch (e) { out.textContent = e.message; }
   };
-  $("#sNext", box).onclick = () => onNext({ score: best });
+  $("#sNext", box).onclick = () => { if (bestR && best < 80) shadowResult(it, bestR, it.src || "루틴 따라 말하기"); onNext({ score: best }); };
 }
 
 // 받아쓰기 → 따라 말하기 → 영작 (문장마다 3단계). mode "dict" 이면 받아쓰기만
@@ -2201,6 +2237,7 @@ function renderVault(v) {
         try {
           const h = await hearSentence(r.en, out); if (!h) return;
           const sc = allScenarios().find((x) => x.id === r.sc), i = r.i, best = h.score;
+          shadowResult({ en: r.en, ko: sc && sc.lines[i] ? sc.lines[i].ko : "" }, h, "발음 연습 · " + (r.t || "").split(" — ")[0]);
           if (sc && sc.lines[i]) { const rec = recordSpeak(sc, i, best); out.innerHTML = `<span class="tag ${best >= 80 ? "good" : "bad"}">${best}%</span> 최고 ${rec.best}% · ${rec.n}회${hearHtml(h)}`; if (best >= 80) log("shadow"); }
           else out.innerHTML = `<span class="tag">${best}%</span>${hearHtml(h)}`;
         } catch (err) { out.textContent = err.message; }

@@ -1902,19 +1902,35 @@ const hintText = (en) => en.split(/\s+/).map((w) => w[0] + "·".repeat(Math.max(
 function dictOne(box, it, head, onNext) {
   let tries = 0, hinted = false;
   box.innerHTML = `${head}
-    <div class="dict-top"><button class="btn primary" id="dPlay">🔊 듣기</button><button class="btn" id="dSlow">🐢 느리게</button><button class="btn" id="dUk">🇬🇧 영국</button><button class="btn ghost" id="dHint">힌트</button></div>
+    <div class="dict-top"><button class="btn primary" id="dPlay">🔊 듣기 (10번)</button><button class="btn" id="dSlow">🐢 느리게</button><button class="btn" id="dUk">🇬🇧 영국</button><button class="btn ghost" id="dHint">힌트</button></div>
     <p class="small muted" style="margin:8px 0">들리는 대로 영어로 쓰세요. 마침표·대소문자는 채점에 영향이 없어요.</p>
     <textarea id="dIn" rows="3" placeholder="들은 문장을 쓰세요" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
     <div id="dHintOut" class="small muted" style="margin-top:6px"></div>
     <div class="row" style="margin-top:8px"><button class="btn ghost" id="dGive">모르겠어요</button><button class="btn primary" id="dGo" style="flex:1">확인</button></div><div id="dRes"></div>`;
-  const play = (slow, lang) => speak(it.en, lang, slow ? 0.7 : undefined);
-  $("#dPlay", box).onclick = () => play(false); $("#dSlow", box).onclick = () => play(true); $("#dUk", box).onclick = () => play(false, "en-GB");
+  // 듣기는 기본 10번 반복(사이 1.5초 쉬며 쓰기). 멈춤 버튼·확인·모르겠어요·다음 문제·창 닫기 때만 멈춤
+  const LOOP_N = 10, GAP = 1500; let loopGen = 0, looping = false;
+  const gone = () => !box.isConnected || box.offsetParent === null;
+  const updBtn = (k) => { const b = $("#dPlay", box); if (b) b.textContent = looping ? `■ 멈춤 (${k}/${LOOP_N})` : "🔊 듣기 (10번)"; };
+  const stopLoop = () => { if (!looping) return; loopGen++; looping = false; window.speechSynthesis?.cancel(); updBtn(); };
+  const play = async (slow, lang) => {
+    const my = ++loopGen; looping = true;
+    for (let k = 1; k <= LOOP_N; k++) {
+      if (my !== loopGen || gone()) { if (my === loopGen) looping = false; return; }
+      updBtn(k);
+      await speak(it.en, lang, slow ? 0.7 : undefined);
+      if (my !== loopGen) return;
+      if (k < LOOP_N) await sleep(GAP);
+    }
+    if (my === loopGen) { looping = false; updBtn(); }
+  };
+  $("#dPlay", box).onclick = () => (looping ? stopLoop() : play(false)); $("#dSlow", box).onclick = () => play(true); $("#dUk", box).onclick = () => play(false, "en-GB");
   $("#dHint", box).onclick = () => { hinted = true; $("#dHintOut", box).textContent = "힌트: " + hintText(it.en); };
   const inp = $("#dIn", box); inp.focus({ preventScroll: true });
   setTimeout(() => play(false), 300);
   const judge = (giveUp) => {
     const got = giveUp ? "" : inp.value.trim();
     if (!giveUp && !got) return inp.focus();
+    stopLoop();
     tries++;
     const d = dictDiff(it.en, got), pass = d.score >= 90 && !giveUp;
     const missed = d.words.filter((x) => !x.ok).map((x) => x.w.replace(/[^A-Za-z0-9']/g, "").toLowerCase());

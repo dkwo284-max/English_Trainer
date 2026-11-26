@@ -3,7 +3,7 @@
  * - /api/* (학습 이력 동기화·AI·받아쓰기)는 캐시하지 않는다. 오프라인일 때는 앱이 기기에 저장해 두었다가 연결되면 올린다.
  */
 const CACHE = "et-v1";
-const CORE = ["/", "/index.html", "/assets/app.js", "/assets/style.css", "/data/scenarios.js", "/data/drills.js", "/data/tenses.js", "/data/monologues.js",
+const CORE = ["/", "/index.html", "/assets/app.js", "/assets/style.css", "/data/scenarios.js", "/data/drills.js", "/data/tenses.js", "/data/monologues.js", "/data/curriculum.js",
   "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {

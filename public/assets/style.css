@@ -331,3 +331,27 @@ html, body { overflow-x: hidden; }
 .rphelp .alt { font-weight: 600; }
 .fixbox { border-left: 3px solid var(--bad); }
 .fixbox .small { line-height: 1.5; }
+
+/* 📘 커리큘럼 */
+.cur-card { border: 1px solid var(--accent); }
+.cur-card.done { border-color: var(--line); }
+.cur-where { margin: 6px 0 4px; font-size: 15px; }
+.cur-bar { display: block; height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin: 4px 0; }
+.cur-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.cur-bar.mini { height: 4px; flex-basis: 100%; margin: 4px 0 0; }
+.cur-today { margin-top: 8px; font-size: 14px; }
+.cur-banner { display: block; width: 100%; margin: 0 0 10px; padding: 9px 12px; border-radius: 12px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 13.5px; text-align: left; cursor: pointer; }
+.cur-prog { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 8px; }
+.cur-q { display: flex; flex-direction: column; gap: 4px; padding: 16px; border-radius: 14px; background: var(--surface-2); text-align: center; }
+.cur-q b { font-size: 24px; line-height: 1.3; }
+.cur-hint { margin-top: 8px; text-align: center; font-family: ui-monospace, monospace; letter-spacing: 1px; color: var(--muted); }
+.cur-ans { margin-top: 10px; padding: 12px; border-radius: 12px; border-left: 4px solid var(--bad); background: var(--surface-2); }
+.cur-ans.ok { border-left-color: var(--good); }
+.cur-ans > b { font-size: 21px; }
+.cur-train { margin-top: 10px; display: grid; gap: 6px; }
+.cur-map { display: grid; gap: 6px; }
+.cur-unit { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+.cur-unit.now { border-color: var(--accent); }
+.cur-unit summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; cursor: pointer; font-weight: 600; }
+.cur-unit ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13.5px; }
+.cur-unit li.train b { color: var(--bad); } .cur-unit li.learned b, .cur-unit li.pass b { color: var(--good); } .cur-unit li.new b { color: var(--muted); }

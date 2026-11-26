@@ -31,6 +31,8 @@ function fix(s) {
   s.settings = Object.assign(blank().settings, s.settings || {});
   for (const k of ["saved", "scenarios", "wrong", "words", "errors", "monos", "monoLog"]) if (!Array.isArray(s[k])) s[k] = [];
   for (const k of ["expr", "speak", "train", "monoWeak"]) if (!s[k] || typeof s[k] !== "object" || Array.isArray(s[k])) s[k] = {};
+  if (!s.cur || typeof s.cur !== "object") s.cur = {};
+  s.cur = Object.assign({ items: {}, extra: {}, tests: [], lastTest: "" }, s.cur);
   return s;
 }
 
@@ -62,6 +64,12 @@ function mergeStates(a, b) {
   for (const [k, v] of Object.entries(a.done || {})) out.done[k] = out.done[k] || v;
   out.settings = Object.assign({}, b.settings, a.settings);
   for (const [k, v] of Object.entries(a.expr || {})) out.expr[k] = Object.assign({}, v, out.expr[k] || {});
+  if (a.cur) {
+    for (const [k, v] of Object.entries(a.cur.items || {})) { const c = out.cur.items[k]; if (!c || (v.at || "") > (c.at || "")) out.cur.items[k] = v; }
+    for (const [d, v] of Object.entries(a.cur.extra || {})) out.cur.extra[d] = Math.max(out.cur.extra[d] || 0, v);
+    const td = new Set(out.cur.tests.map((t) => t.at)); for (const t of a.cur.tests || []) if (!td.has(t.at)) out.cur.tests.push(t);
+    if ((a.cur.lastTest || "") > (out.cur.lastTest || "")) out.cur.lastTest = a.cur.lastTest;
+  }
   for (const [k, v] of Object.entries(a.speak || {})) { const c = out.speak[k]; if (!c || (v.at || "") > (c.at || "")) out.speak[k] = v; }
   for (const [k, v] of Object.entries(a.train || {})) { const c = out.train[k]; if (!c || (v.n || 0) > (c.n || 0)) out.train[k] = v; }
   const eid = new Set(out.errors.map((e) => e.id));
@@ -1316,6 +1324,7 @@ function render() {
   const due = dueItems().length; const bd = $("#dueBadge"); bd.hidden = !due; bd.textContent = due;
   if (TAB !== "mono") stopMono();
   ({ home: renderHome, speak: renderSpeak, mono: renderMono, write: renderWrite, train: renderTrain, vault: renderVault })[TAB]($("#view"));
+  curAfterRender(TAB, $("#view"));
 }
 $("#tabbar").onclick = (e) => { const b = e.target.closest("button"); if (b) go(b.dataset.tab); };
 $("#toolsBtn").onclick = () => openTools();
@@ -1473,6 +1482,161 @@ function weakPractice(type) {
 // 홈
 // 옆 사람이 보지 않게 학습 코드는 앞 두 글자만 (코드 설정 시트에서는 전체)
 const maskCode = (c) => String(c || "").slice(0, 2) + "•".repeat(Math.max(2, String(c || "").length - 2));
+
+// =========================================================
+// 📘 생활 필수 표현 커리큘럼: 600개를 순서대로 하루 10개씩 음성으로 훑고, 모르는 것만 훈련 + 간격 복습
+//  상태 S.cur.items[id] = { st: 'pass'(바로 말함) | 'train'(훈련 중) | 'learned'(익힘), box, due, first, n, at }
+// =========================================================
+const CUR_DAILY = 10, CUR_BACKLOG = 30, CUR_GAPS = [1, 3, 7, 14, 30];
+const CUR_LIST = (() => { const out = []; (window.CURRICULUM || []).forEach((u, ui) => u.items.forEach((it, k) => out.push({ id: `${u.id}-${String(k + 1).padStart(2, "0")}`, ui, unit: u, e: it[0], k: it[1], x: it[2], n: it[3] || "" }))); return out; })();
+const CUR_BY = new Map(CUR_LIST.map((x) => [x.id, x]));
+const curSt = (id) => S.cur.items[id];
+const curDueList = () => CUR_LIST.filter((x) => { const c = curSt(x.id); return c && c.st === "train" && (c.due || "") <= today(); });
+const curNewToday = () => CUR_LIST.filter((x) => (curSt(x.id) || {}).first === today()).length;
+const curQuota = () => CUR_DAILY * (1 + (S.cur.extra[today()] || 0));
+const curNext = (n) => CUR_LIST.filter((x) => !curSt(x.id)).slice(0, n);
+function curStats() {
+  let seen = 0, pass = 0, train = 0, learned = 0;
+  for (const x of CUR_LIST) { const c = curSt(x.id); if (!c) continue; seen++; if (c.st === "pass") pass++; else if (c.st === "train") train++; else learned++; }
+  return { seen, pass, train, learned, total: CUR_LIST.length };
+}
+/** 오늘 할 몫이 끝났나: 오늘 새 표현 몫(복습 밀림이 크면 0) + 오늘 복습 */
+function curTodayLeft() {
+  const due = curDueList().length, backlog = due > CUR_BACKLOG;
+  const newLeft = backlog && S.cur.forceNew !== today() ? 0 : Math.max(0, Math.min(curQuota() - curNewToday(), CUR_LIST.length - curStats().seen));
+  return { due, newLeft, backlog, left: due + newLeft };
+}
+function curMark(x, ok) {
+  const c = S.cur.items[x.id] || { first: today(), n: 0, box: 0 };
+  c.n = (c.n || 0) + 1; c.at = new Date().toISOString();
+  if (!c.st) { if (ok) { c.st = "pass"; } else { c.st = "train"; c.box = 0; c.due = addDays(today(), 1); } }
+  else if (c.st === "train") {
+    if (ok) { c.box = (c.box || 0) + 1; if (c.box >= CUR_GAPS.length) { c.st = "learned"; c.due = ""; } else c.due = addDays(today(), CUR_GAPS[c.box]); }
+    else { c.box = 0; c.due = addDays(today(), 1); }
+  } else if (!ok) { c.st = "train"; c.box = 0; c.due = today(); }   // 테스트에서 틀리면 다시 훈련
+  S.cur.items[x.id] = c; log("cur"); save();
+}
+const curHint = (e) => e.replace(/[A-Za-z']+/g, (w) => w[0] + "_".repeat(Math.max(1, w.length - 1)));
+function curEta() {
+  const left = CUR_LIST.length - curStats().seen; if (!left) return "완주!";
+  const d = new Date(today() + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + Math.ceil(left / CUR_DAILY) - (curNewToday() >= CUR_DAILY ? 0 : 1));
+  return d.toISOString().slice(0, 10).slice(2).replace(/-/g, ".") + " 완주 예상";
+}
+function curHomeCard() {
+  if (!CUR_LIST.length) return "";
+  const st = curStats(), t = curTodayLeft(), next = curNext(1)[0], unit = next ? next.unit : CUR_LIST[CUR_LIST.length - 1].unit;
+  const ui = next ? next.ui : (window.CURRICULUM.length - 1), inUnit = next ? CUR_LIST.filter((x) => x.ui === ui && curSt(x.id)).length : 25;
+  const doneNew = curNewToday(), q = curQuota(), finished = t.left === 0;
+  const testDue = curTestDue();
+  return `<div class="card cur-card ${finished ? "done" : ""}">
+    <div class="row spread"><b>📘 오늘의 커리큘럼</b><button class="lnk" data-cur-map>전체 지도 ›</button></div>
+    <div class="cur-where">단원 ${ui + 1}/24 · <b>${esc(unit.t)}</b> <span class="muted">${inUnit}/25</span></div>
+    <div class="cur-bar" title="전체 ${st.seen}/${st.total}"><i style="width:${(st.seen / st.total) * 100}%"></i></div>
+    <div class="small muted">전체 ${st.seen}/${st.total} 훑음 · 바로 말함 ${st.pass} · 훈련 중 ${st.train} · 익힘 ${st.learned} · ${curEta()}</div>
+    <div class="cur-today">${finished ? `<b class="good">✓ 오늘 몫 끝!</b> 새 표현 ${doneNew}개${t.due ? "" : " · 복습 완료"}` : `오늘: 새 표현 <b>${Math.min(doneNew, q)}/${q}</b>${t.due ? ` · 복습 <b>${t.due}</b>개` : ""}${t.backlog ? ' <span class="bad small">복습이 30개를 넘어 새 표현은 잠시 쉬어요</span>' : ""}`}</div>
+    <div class="row" style="gap:6px;margin-top:8px">${finished ? `<button class="btn" data-cur-more>+10개 더 하기</button>` : `<button class="btn primary big" data-cur-go style="flex:1">${doneNew || st.seen ? "이어 하기" : "시작하기"} (${t.left}개)</button>`}
+      ${testDue ? `<button class="btn" data-cur-test>📝 주간 테스트</button>` : ""}</div>
+  </div>`;
+}
+function curBanner() {
+  const t = curTodayLeft(); if (!CUR_LIST.length || t.left === 0) return "";
+  return `<button class="cur-banner" data-cur-go>📘 오늘의 커리큘럼 ${t.left}개 남음 · 이어 하기 ›</button>`;
+}
+function curAfterRender(tab, v) {
+  if (!CUR_LIST.length) return;
+  if (tab === "home") v.insertAdjacentHTML("afterbegin", curHomeCard()); else { const b = curBanner(); if (b) v.insertAdjacentHTML("afterbegin", b); }
+  v.querySelectorAll("[data-cur-go]").forEach((b) => (b.onclick = () => curSession()));
+  v.querySelectorAll("[data-cur-map]").forEach((b) => (b.onclick = () => curMap()));
+  v.querySelectorAll("[data-cur-test]").forEach((b) => (b.onclick = () => curTest()));
+  v.querySelectorAll("[data-cur-more]").forEach((b) => (b.onclick = () => { S.cur.extra[today()] = (S.cur.extra[today()] || 0) + 1; save(); curSession(); }));
+}
+/** 한 번의 학습(복습 먼저, 그다음 새 표현). 표현마다: 한국어 뜻 → 🎙 영어로 말하기(음성 채점) → 정답·예문 → 모르면 훈련 2단계 */
+function curSession(queueIn, title) {
+  const t = curTodayLeft();
+  let queue = queueIn || [...curDueList().slice(0, 30).map((x) => ({ x, kind: "review" })), ...curNext(t.newLeft).map((x) => ({ x, kind: "new" }))];
+  if (!queue.length && !queueIn && t.backlog) { S.cur.forceNew = today(); queue = curNext(CUR_DAILY).map((x) => ({ x, kind: "new" })); }
+  if (!queue.length) { toast("오늘 몫은 끝났어요. +10개 더 하기로 이어갈 수 있어요"); render(); return; }
+  let i = 0; const res = { ok: 0, bad: 0 };
+  openSheet(`<h2>📘 ${esc(title || "오늘의 커리큘럼")}</h2><div id="curBox"></div>`);
+  const box = $("#curBox");
+  const step = () => {
+    if (i >= queue.length) return finish();
+    const { x, kind } = queue[i];
+    box.innerHTML = `<div class="cur-prog"><span>${i + 1}/${queue.length}</span><span class="muted">${kind === "review" ? "🔁 복습" : kind === "test" ? "📝 테스트" : `단원 ${x.ui + 1} · ${esc(x.unit.t)}`}</span></div>
+      <div class="cur-q"><small class="muted">영어로 말해 보세요</small><b>${esc(x.k)}</b></div>
+      <div id="curHint" class="cur-hint" hidden>${esc(curHint(x.e))}</div>
+      <div id="curOut" class="small" style="min-height:22px;margin:8px 0"></div>
+      <div class="row" style="gap:6px"><button class="btn primary big" id="curMic" style="flex:1">🎙 말하기</button><button class="btn" id="curHintBtn">💡 힌트</button><button class="btn" id="curIdk">모르겠어요</button></div>
+      <div id="curAns"></div>`;
+    let tries = 0, settled = false, lastOk = null, prev = null;
+    const reveal = (ok) => {
+      if (settled) return; settled = true; lastOk = ok;
+      prev = S.cur.items[x.id] ? JSON.parse(JSON.stringify(S.cur.items[x.id])) : null;
+      if (kind !== "test") curMark(x, ok); else if (!ok) curMark(x, false);
+      ok ? res.ok++ : res.bad++;
+      $("#curMic").disabled = true; $("#curHintBtn").disabled = true; $("#curIdk").disabled = true;
+      $("#curAns").innerHTML = `<div class="cur-ans ${ok ? "ok" : "bad"}"><div class="small">${ok ? "✓ 맞았어요" : "이렇게 말해요"}</div><b>${esc(x.e)}</b>
+        <div class="en" style="margin-top:6px">${tappable(x.x, x.e)}</div><div class="acts">${sayBtns(x.x)}</div>${x.n ? `<div class="small muted">💡 ${esc(x.n)}</div>` : ""}</div>
+        ${ok || kind === "test" ? `<button class="btn primary big" id="curNext" style="width:100%;margin-top:8px">다음 ›</button>${ok && kind === "new" ? '<button class="lnk small" id="curUnsure" style="margin-top:4px">사실 헷갈렸어요 → 훈련 목록에 넣기</button>' : ""}`
+        : `<div class="cur-train"><b class="small">훈련 1/2 · 예문을 듣고 따라 말하기</b><div id="curT1" class="small" style="min-height:20px"></div>
+           <div class="row" style="gap:6px"><button class="btn" id="curListen">🔊 듣기</button><button class="btn primary" id="curShadow" style="flex:1">🎙 따라 말하기</button></div>
+           <div id="curT2wrap" hidden><b class="small">훈련 2/2 · 뜻만 보고 다시 말하기: ${esc(x.k)}</b><div id="curT2" class="small" style="min-height:20px"></div><button class="btn primary" id="curAgain" style="width:100%">🎙 다시 말하기</button></div>
+           <button class="btn" id="curNext" style="width:100%;margin-top:8px">다음 ›</button></div>`}`;
+      speak(x.x);
+      $("#curNext").onclick = () => { i++; step(); };
+      const un = $("#curUnsure"); if (un) un.onclick = () => { const c = S.cur.items[x.id]; c.st = "train"; c.box = 0; c.due = addDays(today(), 1); c.at = new Date().toISOString(); save(); un.outerHTML = '<span class="small muted">훈련 목록에 넣었어요 (내일 복습)</span>'; };
+      if (!ok && kind !== "test") {
+        $("#curListen").onclick = () => speak(x.x);
+        $("#curShadow").onclick = async () => { const o = $("#curT1"); const r = await hearSentence(x.x, o); if (!r) return; o.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span>${hearHtml(r)}`; if (r.score >= 80 || ++tries >= 2) $("#curT2wrap").hidden = false; };
+        $("#curAgain").onclick = async () => { const o = $("#curT2"); const r = await hearSentence(x.e, o); if (!r) return; o.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span> ${r.score >= 80 ? "좋아요! 내일 다시 물어볼게요." : "괜찮아요, 내일 복습에서 다시 해요."}${hearHtml(r)}`; };
+      }
+    };
+    $("#curHintBtn").onclick = () => { $("#curHint").hidden = false; };
+    $("#curIdk").onclick = () => reveal(false);
+    $("#curMic").onclick = async () => {
+      const o = $("#curOut"); const r = await hearSentence(x.e, o); if (!r) return;
+      tries++;
+      if (r.score >= 80) { o.innerHTML = `<span class="tag good">${r.score}%</span>${hearHtml(r)}`; reveal(true); return; }
+      o.innerHTML = `<span class="tag bad">${r.score}%</span> ${tries < 2 ? "한 번 더 말해 보세요." : ""}${hearHtml(r)}<div class="row" style="gap:6px;margin-top:4px"><button class="lnk small" id="curSttOk">제대로 말했는데 잘못 들었어요 ✓</button></div>`;
+      $("#curSttOk").onclick = () => {   // 음성 인식이 잘못 들은 경우: 방금 결과를 되돌리고 통과로
+        if (!settled) return reveal(true);
+        if (lastOk) return;
+        if (prev) S.cur.items[x.id] = prev; else delete S.cur.items[x.id];
+        res.bad--; settled = false; reveal(true); $("#curSttOk")?.remove();
+      };
+      if (tries >= 2) reveal(false);
+    };
+  };
+  const finish = () => {
+    const t2 = curTodayLeft();
+    box.innerHTML = `<div class="result ok" style="text-align:center"><div class="score">${res.ok}/${queue.length}</div><p>${title ? "끝!" : "오늘 학습 끝!"} 바로 말한 표현 ${res.ok}개, 훈련한 표현 ${res.bad}개</p>
+      <p class="small muted">훈련한 표현은 1·3·7·14·30일 뒤에 다시 물어봐요.${t2.left ? ` 아직 ${t2.left}개 남았어요.` : ""}</p></div>
+      <div class="row" style="gap:6px;margin-top:10px">${!queueIn && !t2.left ? '<button class="btn" id="curMore2">+10개 더</button>' : ""}<button class="btn primary big" id="curClose" style="flex:1">닫기</button></div>`;
+    $("#curClose").onclick = () => { closeSheet(); render(); };
+    const m2 = $("#curMore2"); if (m2) m2.onclick = () => { S.cur.extra[today()] = (S.cur.extra[today()] || 0) + 1; save(); curSession(); };
+  };
+  step();
+}
+/** 주간 테스트: 지난 7일 동안 처음 본 표현 중 20개 무작위, 틀리면 다시 훈련 */
+function curTestDue() {
+  const since = addDays(today(), -7), pool = CUR_LIST.filter((x) => { const c = curSt(x.id); return c && (c.first || "") > since && c.first < today(); });
+  return pool.length >= 10 && (S.cur.lastTest || "") <= since ? pool : null;
+}
+function curTest() {
+  const pool = curTestDue() || []; if (!pool.length) return toast("이번 주 테스트할 표현이 아직 없어요");
+  const pick = pool.slice().sort(() => Math.random() - 0.5).slice(0, 20);
+  S.cur.lastTest = today(); S.cur.tests.push({ at: new Date().toISOString(), d: today(), n: pick.length }); save();
+  curSession(pick.map((x) => ({ x, kind: "test" })), "주간 테스트");
+}
+function curMap() {
+  const C = window.CURRICULUM || [], nx = curNext(1)[0];
+  openSheet(`<h2>📘 커리큘럼 전체 지도</h2><p class="small muted">순서대로 하루 ${CUR_DAILY}개. 바로 말한 표현은 통과, 모르는 표현은 훈련 뒤 1·3·7·14·30일 간격으로 다시 물어봐요.</p>
+    <div class="cur-map">${C.map((u, ui) => { const xs = CUR_LIST.filter((x) => x.ui === ui), c = (s) => xs.filter((x) => (curSt(x.id) || {}).st === s).length, seen = xs.filter((x) => curSt(x.id)).length;
+      return `<details class="cur-unit ${nx && nx.ui === ui ? "now" : ""}"><summary><span>${ui + 1}. ${esc(u.t)}</span><span class="small muted">${seen}/25${c("train") ? ` · 훈련 ${c("train")}` : ""}</span><i class="cur-bar mini"><i style="width:${(seen / 25) * 100}%"></i></i></summary>
+        <ul>${xs.map((x) => { const s2 = (curSt(x.id) || {}).st; return `<li class="${s2 || "new"}"><span>${s2 === "train" ? "🔁" : s2 === "learned" ? "⭐" : s2 === "pass" ? "✓" : "·"}</span> <b>${esc(x.e)}</b> <small class="muted">${esc(x.k)}</small> <button class="act" data-say="${esc(x.x)}">🔊</button></li>`; }).join("")}</ul></details>`; }).join("")}</div>
+    <p class="small muted">✓ 바로 말함 · 🔁 훈련 중 · ⭐ 익힘(30일 간격까지 통과) · · 아직 안 봄</p>`);
+}
+
 function renderHome(v) {
   const h = todayH(), due = dueItems().length, sc = todayScenario(), ws = todayWriting();
   const wg = weeklyGoals();

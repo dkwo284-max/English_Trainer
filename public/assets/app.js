@@ -575,8 +575,9 @@ const looksBroken = (t) => typeof t === "string" && (((t.match(/[\u3131-\u318E\u
 
 // ── 퀴즈(영작·드릴·복습 공통) ───────────────────────────
 // items: [{ko, en, hint?, sp?, context?}] / opts.kind: write|drill|review / onDone()
+// opts.start/results: 이어하기 위치·지난 결과, opts.draft/draftI: 쓰다 만 문장, onProgress(i, results)·onDraft(text, i): 진행 저장
 function quiz(box, items, opts = {}) {
-  let i = 0, results = [];
+  let i = Math.min(opts.start || 0, items.length), results = (opts.results || []).slice(0, i);
   const step = () => {
     if (i >= items.length) {
       const ok = results.filter(Boolean).length;
@@ -596,6 +597,8 @@ function quiz(box, items, opts = {}) {
       <div class="row" style="margin-top:8px"><button class="btn" id="qMic">🎙 말하기</button><button class="btn ghost" id="qSkip">모르겠어요</button><button class="btn primary" id="qGo" style="flex:1">확인</button></div>
       <div id="qRes"></div>`;
     const inp = $("#qIn", box);
+    if (opts.draft && opts.draftI === i) { inp.value = opts.draft; opts.draft = ""; }
+    if (opts.onDraft) inp.oninput = () => opts.onDraft(inp.value, i);
     if (!opts.compact) inp.focus({ preventScroll: true });
     $("#qMic", box).onclick = async () => {
       const b = $("#qMic", box); b.innerHTML = '<span class="spinner"></span> 듣는 중';
@@ -641,7 +644,7 @@ function quiz(box, items, opts = {}) {
         opts.onEach?.(it, final, i);
       };
       if ($("#qOk", box)) $("#qOk", box).onclick = () => { final = true; $("#qOk", box).remove(); toast("맞은 걸로 처리했어요"); };
-      $("#qNext", box).onclick = () => { record(); i++; step(); };
+      $("#qNext", box).onclick = () => { record(); i++; opts.onProgress?.(i, results); step(); };
       if (ok) speak(r.natural || it.en);
     }
   };
@@ -1042,7 +1045,7 @@ function startRoleplay(sc, custom) {
 }
 const log_ = (k) => log(k);
 
-const hearHtml = (r) => `<div class="dwords">${r.html}</div><div class="small muted">들린 말(${r.via}): “${esc(r.text)}”${r.missed.length ? ` · 다시 들어 볼 단어: <b>${r.missed.slice(0, 4).map(esc).join(", ")}</b>` : ""}</div>`;
+const hearHtml = (r) => `<div class="dwords">${r.html}</div><div class="small muted">${r.via === "타이핑" ? "내가 쓴 문장" : `들린 말(${r.via})`}: “${esc(r.text)}”${r.missed.length ? ` · 다시 들어 볼 단어: <b>${r.missed.slice(0, 4).map(esc).join(", ")}</b>` : ""}</div>`;
 
 // ── 원문 대조: 단어 정렬(LCS) ──
 const ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" ");
@@ -1653,11 +1656,22 @@ function curSession(queueIn, title) {
   const step = () => {
     if (i >= queue.length) return finish();
     const { x, kind } = queue[i];
+    const typing = S.settings.curMode === "type", verb = typing ? "써" : "말해";
+    const inBox = (id, ph) => typing ? `<textarea id="${id}" rows="2" placeholder="${ph}" autocapitalize="sentences" autocomplete="off" spellcheck="false" style="margin-bottom:6px"></textarea>` : "";
+    // 말하기면 녹음·인식, 타이핑이면 쓴 문장을 같은 방식(단어별 대조)으로 채점
+    const answer = async (target, o, inId) => {
+      if (!typing) return hearSentence(target, o);
+      const el = $("#" + inId), v = (el?.value || "").trim();
+      if (!v) { el?.focus(); return null; }
+      return { ...wordDiff(target, v), text: v, via: "타이핑" };
+    };
     box.innerHTML = `<div class="cur-prog"><span>${i + 1}/${queue.length}</span><span class="muted">${x.g ? `🧩 ${kind === "review" ? "문법 복습" : "오늘의 문법"} · ${esc(x.gs.name)}` : kind === "review" ? "🔁 복습" : kind === "test" ? "📝 테스트" : `단원 ${x.ui + 1} · ${esc(x.unit.t)}`}</span></div>
-      <div class="cur-q"><small class="muted">${x.g ? "문장 전체를 영어로 말해 보세요" : "영어로 말해 보세요"}</small><b>${esc(x.k)}</b>${x.g ? `<div class="gram-rule"><span class="tag">${esc(x.gs.name)}</span> ${esc(x.gs.rule)}</div>` : ""}</div>
+      <div class="cur-mode" role="group" aria-label="답하는 방법"><button class="chip ${typing ? "" : "on"}" data-curmode="voice" aria-pressed="${!typing}">🎙 말하기</button><button class="chip ${typing ? "on" : ""}" data-curmode="type" aria-pressed="${typing}">⌨️ 타이핑</button></div>
+      <div class="cur-q"><small class="muted">${x.g ? `문장 전체를 영어로 ${verb} 보세요` : `영어로 ${verb} 보세요`}</small><b>${esc(x.k)}</b>${x.g ? `<div class="gram-rule"><span class="tag">${esc(x.gs.name)}</span> ${esc(x.gs.rule)}</div>` : ""}</div>
       <div id="curHint" class="cur-hint" hidden>${esc(curHint(x.e))}</div>
       <div id="curOut" class="small" style="min-height:22px;margin:8px 0"></div>
-      <div class="row" style="gap:6px"><button class="btn primary big" id="curMic" style="flex:1">🎙 말하기</button><button class="btn" id="curHintBtn">💡 힌트</button><button class="btn" id="curIdk">모르겠어요</button></div>
+      ${inBox("curIn", "영어로 써 보세요 (Enter로 확인)")}
+      <div class="row" style="gap:6px"><button class="btn primary big" id="curMic" style="flex:1">${typing ? "✓ 확인" : "🎙 말하기"}</button><button class="btn" id="curHintBtn">💡 힌트</button><button class="btn" id="curIdk">모르겠어요</button></div>
       <div id="curAns"></div>`;
     let tries = 0, settled = false, lastOk = null, prev = null;
     const reveal = (ok) => {
@@ -1665,15 +1679,16 @@ function curSession(queueIn, title) {
       prev = S.cur.items[x.id] ? JSON.parse(JSON.stringify(S.cur.items[x.id])) : null;
       if (kind !== "test") curMark(x, ok); else if (!ok) curMark(x, false);
       ok ? res.ok++ : res.bad++;
-      $("#curMic").disabled = true; $("#curHintBtn").disabled = true; $("#curIdk").disabled = true;
+      $("#curMic").disabled = true; $("#curHintBtn").disabled = true; $("#curIdk").disabled = true; if ($("#curIn")) $("#curIn").disabled = true;
       $("#curAns").innerHTML = `${x.g ? `<div class="cur-ans ${ok ? "ok" : "bad"}"><div class="small">${ok ? "✓ 맞았어요" : "이렇게 말해요"}</div><div class="en"><b>${tappable(x.e, x.hl)}</b></div><div class="acts">${sayBtns(x.e)}</div>${x.n ? `<div class="small muted">💡 ${esc(x.n)}</div>` : ""}
           <button class="lnk small" data-gram-open="${esc(x.gkey)}">${esc(x.gs.name)} 그림·예문 전체 보기 ›</button></div>`
         : `<div class="cur-ans ${ok ? "ok" : "bad"}"><div class="small">${ok ? "✓ 맞았어요" : "이렇게 말해요"}</div><b>${esc(x.e)}</b>
         <div class="en" style="margin-top:6px">${tappable(x.x, x.e)}</div><div class="acts">${sayBtns(x.x)}</div>${x.n ? `<div class="small muted">💡 ${esc(x.n)}</div>` : ""}</div>`}
         ${ok || kind === "test" ? `<button class="btn primary big" id="curNext" style="width:100%;margin-top:8px">다음 ›</button>${ok && kind === "new" ? '<button class="lnk small" id="curUnsure" style="margin-top:4px">사실 헷갈렸어요 → 훈련 목록에 넣기</button>' : ""}`
-        : `<div class="cur-train"><b class="small">훈련 1/2 · 예문을 듣고 따라 말하기</b><div id="curT1" class="small" style="min-height:20px"></div>
-           <div class="row" style="gap:6px"><button class="btn" id="curListen">🔊 듣기</button><button class="btn primary" id="curShadow" style="flex:1">🎙 따라 말하기</button></div>
-           <div id="curT2wrap" hidden><b class="small">훈련 2/2 · 뜻만 보고 다시 말하기: ${esc(x.k)}${x.g ? ` (${esc(x.gs.rule)})` : ""}</b><div id="curT2" class="small" style="min-height:20px"></div><button class="btn primary" id="curAgain" style="width:100%">🎙 다시 말하기</button></div>
+        : `<div class="cur-train"><b class="small">훈련 1/2 · 예문을 듣고 따라 ${typing ? "쓰기" : "말하기"}</b><div id="curT1" class="small" style="min-height:20px"></div>
+           ${inBox("curT1In", "들은 예문을 써 보세요")}
+           <div class="row" style="gap:6px"><button class="btn" id="curListen">🔊 듣기</button><button class="btn primary" id="curShadow" style="flex:1">${typing ? "✓ 확인" : "🎙 따라 말하기"}</button></div>
+           <div id="curT2wrap" hidden><b class="small">훈련 2/2 · 뜻만 보고 다시 ${typing ? "쓰기" : "말하기"}: ${esc(x.k)}${x.g ? ` (${esc(x.gs.rule)})` : ""}</b><div id="curT2" class="small" style="min-height:20px"></div>${inBox("curT2In", "뜻만 보고 다시 써 보세요")}<button class="btn primary" id="curAgain" style="width:100%">${typing ? "✓ 확인" : "🎙 다시 말하기"}</button></div>
            <button class="btn" id="curNext" style="width:100%;margin-top:8px">다음 ›</button></div>`}`;
       speak(x.x);
       $("#curNext").onclick = () => { i++; step(); };
@@ -1681,17 +1696,24 @@ function curSession(queueIn, title) {
       const un = $("#curUnsure"); if (un) un.onclick = () => { const c = S.cur.items[x.id]; c.st = "train"; c.box = 0; c.due = addDays(today(), 1); c.at = new Date().toISOString(); curToReview(x); un.outerHTML = '<span class="small muted">훈련 목록에 넣었어요 (내일 복습)</span>'; };
       if (!ok && kind !== "test") {
         $("#curListen").onclick = () => speak(x.x);
-        $("#curShadow").onclick = async () => { const o = $("#curT1"); const r = await hearSentence(x.x, o); if (!r) return; o.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span>${hearHtml(r)}`; if (r.score >= 80 || ++tries >= 2) $("#curT2wrap").hidden = false; };
-        $("#curAgain").onclick = async () => { const o = $("#curT2"); const r = await hearSentence(x.e, o); if (!r) return; o.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span> ${r.score >= 80 ? "좋아요! 내일 다시 물어볼게요." : "괜찮아요, 내일 복습에서 다시 해요."}${hearHtml(r)}`; };
+        $("#curShadow").onclick = async () => { const o = $("#curT1"); const r = await answer(x.x, o, "curT1In"); if (!r) return; o.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span>${hearHtml(r)}`; if (r.score >= 80 || ++tries >= 2) $("#curT2wrap").hidden = false; };
+        $("#curAgain").onclick = async () => { const o = $("#curT2"); const r = await answer(x.e, o, "curT2In"); if (!r) return; o.innerHTML = `<span class="tag ${r.score >= 80 ? "good" : "bad"}">${r.score}%</span> ${r.score >= 80 ? "좋아요! 내일 다시 물어볼게요." : "괜찮아요, 내일 복습에서 다시 해요."}${hearHtml(r)}`; };
+        if (typing) [["curT1In", "#curShadow"], ["curT2In", "#curAgain"]].forEach(([id, b]) => { const el = $("#" + id); if (el) el.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $(b).click(); } }; });
       }
     };
+    box.querySelectorAll("[data-curmode]").forEach((b) => (b.onclick = () => {
+      const m = b.dataset.curmode; if ((m === "type") === typing) return;
+      S.settings.curMode = m; save();
+      if (!settled) step(); else { box.querySelectorAll("[data-curmode]").forEach((c) => { const on = c.dataset.curmode === m; c.classList.toggle("on", on); c.setAttribute("aria-pressed", on); }); toast("다음 문장부터 바뀌어요"); }
+    }));
+    if (typing) { const el = $("#curIn"); el.focus({ preventScroll: true }); el.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#curMic").click(); } }; }
     $("#curHintBtn").onclick = () => { $("#curHint").hidden = false; };
     $("#curIdk").onclick = () => reveal(false);
     $("#curMic").onclick = async () => {
-      const o = $("#curOut"); const r = await hearSentence(x.e, o); if (!r) return;
+      const o = $("#curOut"); const r = await answer(x.e, o, "curIn"); if (!r) return;
       tries++;
       if (r.score >= 80) { o.innerHTML = `<span class="tag good">${r.score}%</span>${hearHtml(r)}`; reveal(true); return; }
-      o.innerHTML = `<span class="tag bad">${r.score}%</span> ${tries < 2 ? "한 번 더 말해 보세요." : ""}${hearHtml(r)}<div class="row" style="gap:6px;margin-top:4px"><button class="lnk small" id="curSttOk">제대로 말했는데 잘못 들었어요 ✓</button></div>`;
+      o.innerHTML = `<span class="tag bad">${r.score}%</span> ${tries < 2 ? (typing ? "고쳐서 한 번 더 확인해 보세요." : "한 번 더 말해 보세요.") : ""}${hearHtml(r)}<div class="row" style="gap:6px;margin-top:4px"><button class="lnk small" id="curSttOk">${typing ? "다른 표현이지만 맞게 썼어요 ✓" : "제대로 말했는데 잘못 들었어요 ✓"}</button></div>`;
       $("#curSttOk").onclick = () => {   // 음성 인식이 잘못 들은 경우: 방금 결과를 되돌리고 통과로
         if (!settled) return reveal(true);
         if (lastOk) return;
@@ -2089,22 +2111,37 @@ function renderWrite(v) {
   const ws = todayWriting();
   const custom = S.scenarios.filter((s) => s.kind === "writing");
   const doneKey = "write:" + today() + ":" + ws.id;
+  const progOf = (s) => { const g = S.done["wprog:" + s.id]; return g && typeof g === "object" && ((g.i > 0 && g.i < s.lines.length) || (g.i === 0 && g.draft)) ? g : null; };
+  const pk = "wprog:" + ws.id, pg = progOf(ws), n = ws.lines.length;
   v.innerHTML = `
     <div class="chips" id="wsChips"><button class="chip" id="newWs">＋ 새 주제 (AI)</button>
-      ${[...WRITING_SETS, ...custom].map((s) => `<button class="chip ${s.id === ws.id ? "on" : ""}" data-id="${esc(s.id)}">${S.done["write:done:" + s.id] ? "✓ " : ""}${esc(s.title)}</button>`).join("")}</div>
+      ${[...WRITING_SETS, ...custom].map((s) => { const g = progOf(s); return `<button class="chip ${s.id === ws.id ? "on" : ""}" data-id="${esc(s.id)}">${S.done["write:done:" + s.id] ? "✓ " : g ? "⏸ " : ""}${esc(s.title)}${g ? ` <small>${g.i}/${s.lines.length}</small>` : ""}</button>`; }).join("")}</div>
     <div class="card"><div class="row spread"><span class="tag">대화형 영작 10문장</span>${S.done[doneKey] ? '<span class="tag good">오늘 완료</span>' : ""}</div>
       <h2 style="margin-top:8px">${esc(ws.title)}</h2>
       <p class="small muted" style="margin:4px 0 0">앞 문장이 쌓이며 대화가 이어져요. 한국어를 보고 말하듯이 써 보세요. AI 코치가 원어민식으로 고쳐 주고, 틀린 문장은 복습함에 자동 저장돼요.</p>
-      <div id="wQuiz" style="margin-top:12px"><button class="btn primary big" id="wStart">시작하기</button></div></div>`;
+      <div id="wQuiz" style="margin-top:12px">${pg
+        ? `<button class="btn primary big" id="wResume" style="width:100%">▶ 이어하기 · ${pg.i + 1}번째 문장부터</button>
+           <p class="small muted" style="margin:6px 0 0">${pg.i}/${n}문장 완료${pg.draft && pg.di === pg.i ? " · 쓰던 문장도 그대로 남아 있어요" : ""}</p>
+           <button class="btn" id="wStart" style="width:100%;margin-top:8px">처음부터 다시</button>`
+        : `<button class="btn primary big" id="wStart">시작하기</button>`}</div></div>`;
   $("#wsChips").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
     if (b.id === "newWs") return newWritingSheet();
     S.done["wpick:" + today()] = b.dataset.id; save(); renderWrite(v);
   };
-  $("#wStart").onclick = () => quiz($("#wQuiz"), ws.lines.map((l) => ({ ...l })), {
-    kind: "write", context: true, src: "영작 " + ws.title,
-    onDone: () => { S.done[doneKey] = 1; S.done["write:done:" + ws.id] = today(); save(); },
-  });
+  let draftT = null;
+  const run = (g) => {
+    if (!g) { delete S.done[pk]; save(); }
+    quiz($("#wQuiz"), ws.lines.map((l) => ({ ...l })), {
+      kind: "write", context: true, src: "영작 " + ws.title,
+      start: g ? g.i : 0, results: g ? g.r || [] : [], draft: g ? g.draft || "" : "", draftI: g ? g.di : -1,
+      onProgress: (i, r) => { clearTimeout(draftT); if (i < n) S.done[pk] = { i, r: r.slice(), at: today() }; save(); },
+      onDraft: (t, i) => { const c = S.done[pk] && typeof S.done[pk] === "object" ? S.done[pk] : { i, r: [], at: today() }; S.done[pk] = { ...c, draft: t, di: i }; clearTimeout(draftT); draftT = setTimeout(save, 1500); },
+      onDone: () => { clearTimeout(draftT); delete S.done[pk]; S.done[doneKey] = 1; S.done["write:done:" + ws.id] = today(); save(); },
+    });
+  };
+  $("#wStart").onclick = () => run(null);
+  if ($("#wResume")) $("#wResume").onclick = () => run(pg);
 }
 function newWritingSheet() {
   openSheet(`<h2>새 영작 주제</h2><p class="small muted">주제를 쓰면 AI가 10문장 대화(A·B)를 만들어요.</p>

@@ -355,3 +355,8 @@ html, body { overflow-x: hidden; }
 .cur-unit summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; cursor: pointer; font-weight: 600; }
 .cur-unit ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13.5px; }
 .cur-unit li.train b { color: var(--bad); } .cur-unit li.learned b, .cur-unit li.pass b { color: var(--good); } .cur-unit li.new b { color: var(--muted); }
+.rp-targets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; padding: 8px 10px; border-radius: 12px; background: var(--accent-soft); }
+.rp-targets > span:first-child { flex-basis: 100%; }
+.rp-tg { display: inline-flex; flex-direction: column; padding: 4px 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); font-weight: 700; font-size: 13px; }
+.rp-tg small { font-weight: 400; font-size: 11px; color: var(--muted); }
+.rp-tg.on { border-color: var(--good); color: var(--good); }

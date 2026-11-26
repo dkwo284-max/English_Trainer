@@ -847,8 +847,9 @@ const RP_MAX_TURNS = 7;
 function startRoleplay(sc, custom) {
   const scenario = custom || `${sc.title}${sc.setting ? " — " + sc.setting : ""}`;
   const roles = custom ? "A = me (the learner, a Korean parent living in Auckland), B = the other person in this situation" : `A = ${sc.roles?.A || "me"}, B = ${sc.roles?.B || "the other person"}`;
-  const rp = { scenario, roles, lines: [], turns: 0, done: false, busy: false };
+  const rp = { scenario, roles, lines: [], turns: 0, done: false, busy: false, targets: curRoleTargets(), used: {} };
   openSheet(`<h2>🎭 AI 역할극</h2><p class="small muted" style="margin:2px 0 8px">${esc(scenario)}<br>AI가 상대(B), 내가 A예요. 🎙를 누르고 말하면 받아 적어 대답해요. 막히면 🆘 모범답안을 보거나, ✍ 로 <b>한국어로 쓰면 영어로</b> 바꿔 줘요.</p>
+    ${rp.targets.length ? `<div class="rp-targets" id="rpTargets"></div>` : ""}
     <div id="rpLog" class="rplog"></div>
     <div id="rpOut" class="small muted" style="min-height:22px;margin:6px 0"></div>
     <div class="row" style="gap:6px"><button class="btn primary big" id="rpMic" style="flex:1">🎙 말하기</button><button class="btn" id="rpType" aria-label="글로 쓰기 (한국어도 가능)">✍ 글로</button><button class="btn" id="rpEnd">끝내기</button></div>
@@ -856,6 +857,15 @@ function startRoleplay(sc, custom) {
       <div class="small muted" id="rpKoHint" style="margin-top:4px">🇰🇷 영어가 안 나오면 <b>한국어로 쓰세요</b>. 지금 상황에 맞는 영어로 바꿔 주고, 복습 문장에도 자동으로 저장해요.</div></div>`);
   const log = $("#rpLog"), out = $("#rpOut");
   const hist = () => rp.lines.map((l) => `${l.sp}: ${l.en}`).join("\n");
+  // 🎯 커리큘럼 목표 표현: 상대 AI 가 자연스럽게 쓸 기회를 만들고, 내가 쓰면 ✓ (내 힘으로 쓴 훈련 표현은 복습 통과로)
+  const drawTargets = () => { const el = $("#rpTargets"); if (!el) return;
+    el.innerHTML = `<span class="small muted">🎯 이번 역할극에서 써 볼 표현 <small>(커리큘럼)</small></span>${rp.targets.map((x) => `<span class="rp-tg ${rp.used[x.id] ? "on" : ""}" title="${esc(x.k)}">${rp.used[x.id] ? "✓ " : ""}${esc(x.e)}<small>${esc(x.k)}</small></span>`).join("")}`; };
+  drawTargets();
+  const checkTargets = (line, assist) => {
+    let hit = false;
+    for (const x of rp.targets) if (!rp.used[x.id] && curUses(line, x.e)) { rp.used[x.id] = assist ? "assist" : "own"; hit = true; }
+    if (hit) { drawTargets(); toast("🎯 목표 표현을 썼어요!"); }
+  };
   // 내 문장 점검 결과: 문법이 틀리면 틀린 부분 → 고친 부분을 짚고, 통과여도 더 자연스러운 표현이 있으면 같이 보여 줌
   const fixHtml = (l) => {
     if (l.assist) return "";
@@ -917,7 +927,9 @@ function startRoleplay(sc, custom) {
     }
     out.innerHTML = '<span class="spinner"></span> 상대가 생각 중…';
     try {
-      const r = await ai("roleplay", { scenario: rp.scenario, roles: rp.roles, history: hist().split("\n").slice(0, mine ? -1 : undefined).join("\n"), mine: mine || "" }, { fresh: true });
+      if (mine) checkTargets(mine, !!assist);
+      const left = rp.targets.filter((x) => !rp.used[x.id]).map((x) => x.e).join(" | ");
+      const r = await ai("roleplay", { scenario: rp.scenario, roles: rp.roles, history: hist().split("\n").slice(0, mine ? -1 : undefined).join("\n"), mine: mine || "", targets: left }, { fresh: true });
       rp.lines.push({ sp: "B", en: r.reply, ko: r.ko, hint: r.hint, model: String(r.model || "").trim(), modelKo: r.modelKo || "" });
       rp.done = !!r.done || rp.turns >= RP_MAX_TURNS;
       draw(); out.textContent = "";
@@ -928,6 +940,10 @@ function startRoleplay(sc, custom) {
   };
   const finish = async () => {
     rp.done = true; log_("roleplay");
+    const tgUsed = rp.targets.filter((x) => rp.used[x.id]);
+    for (const x of tgUsed) { const c = S.cur.items[x.id]; if (!c) continue; c.rp = today();
+      if (rp.used[x.id] === "own" && c.st === "train" && (c.due || "") <= today()) curMark(x, true); }
+    if (rp.targets.length) save();
     if ((rp.checks || []).length) { out.innerHTML = '<span class="spinner"></span> 마지막 문장까지 점검하는 중…'; await Promise.all(rp.checks); }
     const fixes = rp.lines.filter((l) => l.sp === "A" && l.fix && !l.fix.ok && l.fix.better);
     // 모범답안을 쓴 문장은 내 실력이 아니므로 '자연스러웠어요' 집계에서 빼고, 복습에는 따로 넣을 수 있게 함
@@ -935,7 +951,7 @@ function startRoleplay(sc, custom) {
     const own = rp.lines.filter((l) => l.sp === "A" && !l.assist && !l.fixErr), ownFix = fixes.filter((l) => !l.assist);
     const unchecked = rp.lines.filter((l) => l.sp === "A" && l.fixErr).length;
     const nSave = ownFix.length + helped.length;
-    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 도움을 받아 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${unchecked ? `<div class="small muted" style="margin:4px 0">⚠ ${unchecked}문장은 AI 오류로 점검하지 못했어요.</div>` : ""}${koN ? `<div class="small muted" style="margin:4px 0">🇰🇷 한국어로 말해 영어로 바꾼 ${koN}문장은 복습에 이미 저장했어요.</div>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
+    out.innerHTML = `<div class="card tight"><b>역할극 끝 👏</b> ${own.length ? `내 힘으로 말한 ${own.length}문장 중 ${own.length - ownFix.length}문장이 자연스러웠어요.` : "이번엔 도움을 받아 말하며 연습했어요."}${helped.length && own.length ? ` <span class="small muted">모범답안 참고 ${helped.length}문장</span>` : ""}${unchecked ? `<div class="small muted" style="margin:4px 0">⚠ ${unchecked}문장은 AI 오류로 점검하지 못했어요.</div>` : ""}${rp.targets.length ? `<div class="small" style="margin:4px 0">🎯 목표 표현 ${tgUsed.length}/${rp.targets.length}개 사용${tgUsed.length ? `: ${tgUsed.map((x) => esc(x.e) + (rp.used[x.id] === "assist" ? "(도움)" : "")).join(", ")}` : " — 다음엔 하나씩 써 봐요"}</div>` : ""}${koN ? `<div class="small muted" style="margin:4px 0">🇰🇷 한국어로 말해 영어로 바꾼 ${koN}문장은 복습에 이미 저장했어요.</div>` : ""}${nSave ? `<div class="small muted" style="margin:4px 0">${ownFix.length ? `고친 문장 ${ownFix.length}개` : ""}${ownFix.length && helped.length ? " + " : ""}${helped.length ? `모범답안 ${helped.length}개` : ""}를 복습에 넣으면 다음에 한국어를 보고 다시 말해 봐요.</div><button class="btn primary" id="rpSave">${nSave}문장 복습에 추가</button>` : ""}</div>`;
     $("#rpMic").disabled = true;
     if ($("#rpSave")) $("#rpSave").onclick = () => {
       let n = 0;
@@ -1616,6 +1632,24 @@ function curSession(queueIn, title) {
     const m2 = $("#curMore2"); if (m2) m2.onclick = () => { S.cur.extra[today()] = (S.cur.extra[today()] || 0) + 1; save(); curSession(); };
   };
   step();
+}
+/** 역할극 목표 표현 최대 3개: 복습이 다가온 훈련 표현 → 최근 7일에 처음 본 표현 (매번 조금씩 바뀌게 섞음) */
+function curRoleTargets() {
+  if (!CUR_LIST.length || !S.cur) return [];
+  const since = addDays(today(), -7), sh = (a) => a.map((x) => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map((p) => p[1]);
+  const train = CUR_LIST.filter((x) => (curSt(x.id) || {}).st === "train").sort((a, b) => (curSt(a.id).due || "").localeCompare(curSt(b.id).due || "")).slice(0, 6);
+  const recent = CUR_LIST.filter((x) => { const c = curSt(x.id); return c && c.st !== "train" && (c.first || "") > since; });
+  const out = []; for (const x of [...sh(train), ...sh(recent)]) { if (out.length >= 3) break; if (!out.some((y) => y.id === x.id)) out.push(x); }
+  return out;
+}
+/** 문장에 표현을 썼나: someone·your 같은 자리 단어는 빼고, 남은 단어마다 앞 4글자가 순서대로 나오면(활용형 허용) */
+function curUses(line, phrase) {
+  const words = norm(line).split(/\s+/).filter(Boolean);
+  const core = norm(phrase).split(/\s+/).filter((w) => w && !["someone", "your", "my", "the", "a", "an", "it's", "its"].includes(w));
+  if (!core.length) return false;
+  let i = 0;
+  for (const w of core) { const k = w.slice(0, Math.min(4, w.length)); while (i < words.length && !words[i].startsWith(k)) i++; if (i >= words.length) return false; i++; }
+  return true;
 }
 /** 주간 테스트: 지난 7일 동안 처음 본 표현 중 20개 무작위, 틀리면 다시 훈련 */
 function curTestDue() {

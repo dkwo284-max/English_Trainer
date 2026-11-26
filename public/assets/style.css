@@ -360,3 +360,10 @@ html, body { overflow-x: hidden; }
 .rp-tg { display: inline-flex; flex-direction: column; padding: 4px 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); font-weight: 700; font-size: 13px; }
 .rp-tg small { font-weight: 400; font-size: 11px; color: var(--muted); }
 .rp-tg.on { border-color: var(--good); color: var(--good); }
+
+/* 🧩 오늘의 문법 (커리큘럼 연동) */
+.gram-rule{margin-top:8px;font-size:13px;color:var(--muted);line-height:1.45}
+.gram-rule .tag{margin-right:4px}
+.cur-gram{margin-top:4px;color:var(--muted)}
+.cur-gmap{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}
+.cur-gmap .chip small{opacity:.7;margin-left:2px}

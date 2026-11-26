@@ -1539,6 +1539,37 @@ const curDueList = () => CUR_LIST.filter((x) => { const c = curSt(x.id); return 
 const curNewToday = () => CUR_LIST.filter((x) => (curSt(x.id) || {}).first === today()).length;
 const curQuota = () => CUR_DAILY * (1 + (S.cur.extra[today()] || 0));
 const curNext = (n) => CUR_LIST.filter((x) => !curSt(x.id)).slice(0, n);
+/* 🧩 오늘의 문법: 기본동사·5형식·시제·가정법 186문장을 단원 주제에 맞춰 나눠, 커리큘럼 안에서 하루 3문장씩 같이 훈련
+ *  진도는 커리큘럼과 같은 S.cur.items 에 'g-…' id로 저장(같은 간격 복습). 결과는 훈련 탭 정답률(S.train)에도 반영 */
+const UNIT_GRAM = { u01: ["tense:pres", "verb:get"], u02: ["verb:put", "form:1"], u03: ["tense:presprog", "verb:do"], u04: ["verb:make", "form:3"], u05: ["verb:have", "tense:past"],
+  u06: ["verb:take", "form:2"], u07: ["tense:fut", "verb:go"], u08: ["verb:give", "form:4"], u09: ["tense:presperf"], u10: ["verb:keep", "form:5"], u11: ["tense:pastprog", "verb:let"],
+  u12: ["tense:futprog"], u13: ["tense:presperfprog", "verb:come"], u14: ["tense:pastperf"], u15: ["tense:futperf"], u16: ["tense:subj2"], u17: ["verb:work", "tense:pastperfprog"],
+  u18: ["tense:wish"], u19: ["tense:futperfprog"], u20: ["tense:subj3"], u22: ["tense:subjmix"] };
+const GRAM_DAILY = 3;
+const GRAM_SETS = (() => {
+  const V = window.VERBS || [], F = window.FORMS || [], T = window.TENSES || [], units = window.CURRICULUM || [], out = [], seen = new Set();
+  const make = (key, ui) => {
+    if (seen.has(key)) return; const [kind, id] = key.split(":");
+    const set = kind === "verb" ? V.find((x) => x.v === id) : kind === "form" ? F.find((x) => String(x.n) === id) : T.find((x) => x.id === id);
+    if (!set) return; seen.add(key);
+    const name = kind === "verb" ? `기본동사 ${set.v}` : kind === "form" ? set.name.split(" ")[0] : set.name;
+    const rule = kind === "verb" ? set.core : kind === "form" ? set.name.replace(/^\d형식\s*/, "") : set.form;
+    out.push({ key, kind, id, ui, name, rule, set });
+  };
+  units.forEach((u, ui) => (UNIT_GRAM[u.id] || []).forEach((k) => make(k, ui)));
+  V.forEach((x) => make("verb:" + x.v, units.length - 1)); F.forEach((x) => make("form:" + x.n, units.length - 1)); T.forEach((x) => make("tense:" + x.id, units.length - 1));
+  return out;
+})();
+const GRAM_LIST = GRAM_SETS.flatMap((g) => g.set.items.map((it, k) => ({ id: `g-${g.kind}-${g.id}-${k + 1}`, g: true, gs: g, gkey: g.key, ui: g.ui,
+  unit: { t: "문법 · " + g.name }, e: it.en, k: it.ko, x: it.en, hl: it.hl || "",
+  n: g.kind === "verb" ? (it.note || "") : g.kind === "form" ? (it.parts || "") : `${g.set.name}: ${g.set.form}` })));
+const gramDueList = () => GRAM_LIST.filter((x) => { const c = curSt(x.id); return c && c.st === "train" && (c.due || "") <= today(); });
+const gramNewToday = () => GRAM_LIST.filter((x) => (curSt(x.id) || {}).first === today()).length;
+const gramQuota = () => GRAM_DAILY * (1 + (S.cur.extra[today()] || 0));
+const gramNext = (n) => GRAM_LIST.filter((x) => !curSt(x.id)).slice(0, n);
+const gramSeen = () => GRAM_LIST.filter((x) => curSt(x.id)).length;
+/** 오늘 커리큘럼이 다루는 문법 세트(훈련 탭 기본 선택에도 씀) */
+function gramToday() { const x = gramNext(1)[0] || GRAM_LIST.filter((y) => (curSt(y.id) || {}).first === today()).pop(); return x ? x.gs : null; }
 function curStats() {
   let seen = 0, pass = 0, train = 0, learned = 0;
   for (const x of CUR_LIST) { const c = curSt(x.id); if (!c) continue; seen++; if (c.st === "pass") pass++; else if (c.st === "train") train++; else learned++; }
@@ -1548,7 +1579,8 @@ function curStats() {
 function curTodayLeft() {
   const due = curDueList().length, backlog = due > CUR_BACKLOG;
   const newLeft = backlog && S.cur.forceNew !== today() ? 0 : Math.max(0, Math.min(curQuota() - curNewToday(), CUR_LIST.length - curStats().seen));
-  return { due, newLeft, backlog, left: due + newLeft };
+  const gDue = Math.min(gramDueList().length, 10), gNew = backlog && S.cur.forceNew !== today() ? 0 : Math.max(0, Math.min(gramQuota() - gramNewToday(), GRAM_LIST.length - gramSeen()));
+  return { due, newLeft, backlog, gDue, gNew, left: due + newLeft + gDue + gNew };
 }
 function curMark(x, ok) {
   const c = S.cur.items[x.id] || { first: today(), n: 0, box: 0 };
@@ -1559,11 +1591,12 @@ function curMark(x, ok) {
     else { c.box = 0; c.due = addDays(today(), 1); }
   } else if (!ok) { c.st = "train"; c.box = 0; c.due = today(); }   // 테스트에서 틀리면 다시 훈련
   S.cur.items[x.id] = c; log("cur");
+  if (x.g) { const t = { ...(S.train[x.gkey] || { n: 0, ok: 0 }) }; t.n++; if (ok) t.ok++; t.at = today(); S.train[x.gkey] = t; log("drill"); }
   if (!ok) curToReview(x); else save();
 }
 function curToReview(x) {
   const existed = S.wrong.some((w) => !w.del && norm(w.en) === norm(x.e));
-  addWrong({ ko: x.k, en: x.e, src: "커리큘럼 · " + x.unit.t }, "", { why: `예: ${x.x}${x.n ? " · " + x.n : ""}`, types: [] });
+  addWrong({ ko: x.k, en: x.e, src: "커리큘럼 · " + x.unit.t }, "", { why: x.g ? `${x.gs.name} — ${x.gs.rule}${x.n ? " · " + x.n : ""}` : `예: ${x.x}${x.n ? " · " + x.n : ""}`, types: x.g && x.gs.kind === "tense" ? ["시제"] : [] });
   if (!existed) { const w = S.wrong.find((y) => norm(y.en) === norm(x.e)); if (w) w.natural = x.x; save(); }
 }
 const curHint = (e) => e.replace(/[A-Za-z']+/g, (w) => w[0] + "_".repeat(Math.max(1, w.length - 1)));
@@ -1583,7 +1616,8 @@ function curHomeCard() {
     <div class="cur-where">단원 ${ui + 1}/24 · <b>${esc(unit.t)}</b> <span class="muted">${inUnit}/25</span></div>
     <div class="cur-bar" title="전체 ${st.seen}/${st.total}"><i style="width:${(st.seen / st.total) * 100}%"></i></div>
     <div class="small muted">전체 ${st.seen}/${st.total} 훑음 · 바로 말함 ${st.pass} · 훈련 중 ${st.train} · 익힘 ${st.learned} · ${curEta()}</div>
-    <div class="cur-today">${finished ? `<b class="good">✓ 오늘 몫 끝!</b> 새 표현 ${doneNew}개${t.due ? "" : " · 복습 완료"}` : `오늘: 새 표현 <b>${Math.min(doneNew, q)}/${q}</b>${t.due ? ` · 복습 <b>${t.due}</b>개` : ""}${t.backlog ? ' <span class="bad small">복습이 30개를 넘어 새 표현은 잠시 쉬어요</span>' : ""}`}</div>
+    ${GRAM_LIST.length ? (() => { const g = gramToday(), gn = gramNewToday(); return `<div class="small cur-gram">🧩 문법 ${gramSeen()}/${GRAM_LIST.length} · 오늘 ${Math.min(gn, gramQuota())}/${gramQuota()}문장${t.gDue ? ` · 복습 ${t.gDue}` : ""}${g ? ` · <button class="lnk small" data-gram-open="${esc(g.key)}">${esc(g.name)}</button>` : ""}</div>`; })() : ""}
+    <div class="cur-today">${finished ? `<b class="good">✓ 오늘 몫 끝!</b> 새 표현 ${doneNew}개 + 문법 ${gramNewToday()}문장${t.due ? "" : " · 복습 완료"}` : `오늘: 새 표현 <b>${Math.min(doneNew, q)}/${q}</b> + 문법 <b>${Math.min(gramNewToday(), gramQuota())}/${gramQuota()}</b>${t.due ? ` · 복습 <b>${t.due}</b>개` : ""}${t.backlog ? ' <span class="bad small">복습이 30개를 넘어 새 표현은 잠시 쉬어요</span>' : ""}`}</div>
     <div class="row" style="gap:6px;margin-top:8px">${finished ? `<button class="btn" data-cur-more>+10개 더 하기</button>` : `<button class="btn primary big" data-cur-go style="flex:1">${doneNew || st.seen ? "이어 하기" : "시작하기"} (${t.left}개)</button>`}
       ${testDue ? `<button class="btn" data-cur-test>📝 주간 테스트</button>` : ""}</div>
   </div>`;
@@ -1598,13 +1632,20 @@ function curAfterRender(tab, v) {
   v.querySelectorAll("[data-cur-go]").forEach((b) => (b.onclick = () => curSession()));
   v.querySelectorAll("[data-cur-map]").forEach((b) => (b.onclick = () => curMap()));
   v.querySelectorAll("[data-cur-test]").forEach((b) => (b.onclick = () => curTest()));
+  v.querySelectorAll("[data-gram-open]").forEach((b) => (b.onclick = () => gramOpen(b.dataset.gramOpen)));
   v.querySelectorAll("[data-cur-more]").forEach((b) => (b.onclick = () => { S.cur.extra[today()] = (S.cur.extra[today()] || 0) + 1; save(); curSession(); }));
 }
 /** 한 번의 학습(복습 먼저, 그다음 새 표현). 표현마다: 한국어 뜻 → 🎙 영어로 말하기(음성 채점) → 정답·예문 → 모르면 훈련 2단계 */
 function curSession(queueIn, title) {
   const t = curTodayLeft();
-  let queue = queueIn || [...curDueList().slice(0, 30).map((x) => ({ x, kind: "review" })), ...curNext(t.newLeft).map((x) => ({ x, kind: "new" }))];
-  if (!queue.length && !queueIn && t.backlog) { S.cur.forceNew = today(); queue = curNext(CUR_DAILY).map((x) => ({ x, kind: "new" })); }
+  let queue = queueIn;
+  if (!queue) {   // 새 표현 사이에 오늘의 문법을 끼워 넣어 자연스럽게 같이 훈련
+    const nw = curNext(t.newLeft).map((x) => ({ x, kind: "new" })), gn = gramNext(t.gNew).map((x) => ({ x, kind: "new" })), mix = [];
+    const every = gn.length ? Math.max(2, Math.ceil(nw.length / (gn.length + 1))) : 0;
+    nw.forEach((q, i) => { mix.push(q); if (every && (i + 1) % every === 0 && gn.length) mix.push(gn.shift()); });
+    queue = [...curDueList().slice(0, 30).map((x) => ({ x, kind: "review" })), ...gramDueList().slice(0, 10).map((x) => ({ x, kind: "review" })), ...mix, ...gn];
+  }
+  if (!queue.length && !queueIn && t.backlog) { S.cur.forceNew = today(); queue = [...curNext(CUR_DAILY), ...gramNext(GRAM_DAILY)].map((x) => ({ x, kind: "new" })); }
   if (!queue.length) { toast("오늘 몫은 끝났어요. +10개 더 하기로 이어갈 수 있어요"); render(); return; }
   let i = 0; const res = { ok: 0, bad: 0 };
   openSheet(`<h2>📘 ${esc(title || "오늘의 커리큘럼")}</h2><div id="curBox"></div>`);
@@ -1612,8 +1653,8 @@ function curSession(queueIn, title) {
   const step = () => {
     if (i >= queue.length) return finish();
     const { x, kind } = queue[i];
-    box.innerHTML = `<div class="cur-prog"><span>${i + 1}/${queue.length}</span><span class="muted">${kind === "review" ? "🔁 복습" : kind === "test" ? "📝 테스트" : `단원 ${x.ui + 1} · ${esc(x.unit.t)}`}</span></div>
-      <div class="cur-q"><small class="muted">영어로 말해 보세요</small><b>${esc(x.k)}</b></div>
+    box.innerHTML = `<div class="cur-prog"><span>${i + 1}/${queue.length}</span><span class="muted">${x.g ? `🧩 ${kind === "review" ? "문법 복습" : "오늘의 문법"} · ${esc(x.gs.name)}` : kind === "review" ? "🔁 복습" : kind === "test" ? "📝 테스트" : `단원 ${x.ui + 1} · ${esc(x.unit.t)}`}</span></div>
+      <div class="cur-q"><small class="muted">${x.g ? "문장 전체를 영어로 말해 보세요" : "영어로 말해 보세요"}</small><b>${esc(x.k)}</b>${x.g ? `<div class="gram-rule"><span class="tag">${esc(x.gs.name)}</span> ${esc(x.gs.rule)}</div>` : ""}</div>
       <div id="curHint" class="cur-hint" hidden>${esc(curHint(x.e))}</div>
       <div id="curOut" class="small" style="min-height:22px;margin:8px 0"></div>
       <div class="row" style="gap:6px"><button class="btn primary big" id="curMic" style="flex:1">🎙 말하기</button><button class="btn" id="curHintBtn">💡 힌트</button><button class="btn" id="curIdk">모르겠어요</button></div>
@@ -1625,15 +1666,18 @@ function curSession(queueIn, title) {
       if (kind !== "test") curMark(x, ok); else if (!ok) curMark(x, false);
       ok ? res.ok++ : res.bad++;
       $("#curMic").disabled = true; $("#curHintBtn").disabled = true; $("#curIdk").disabled = true;
-      $("#curAns").innerHTML = `<div class="cur-ans ${ok ? "ok" : "bad"}"><div class="small">${ok ? "✓ 맞았어요" : "이렇게 말해요"}</div><b>${esc(x.e)}</b>
-        <div class="en" style="margin-top:6px">${tappable(x.x, x.e)}</div><div class="acts">${sayBtns(x.x)}</div>${x.n ? `<div class="small muted">💡 ${esc(x.n)}</div>` : ""}</div>
+      $("#curAns").innerHTML = `${x.g ? `<div class="cur-ans ${ok ? "ok" : "bad"}"><div class="small">${ok ? "✓ 맞았어요" : "이렇게 말해요"}</div><div class="en"><b>${tappable(x.e, x.hl)}</b></div><div class="acts">${sayBtns(x.e)}</div>${x.n ? `<div class="small muted">💡 ${esc(x.n)}</div>` : ""}
+          <button class="lnk small" data-gram-open="${esc(x.gkey)}">${esc(x.gs.name)} 그림·예문 전체 보기 ›</button></div>`
+        : `<div class="cur-ans ${ok ? "ok" : "bad"}"><div class="small">${ok ? "✓ 맞았어요" : "이렇게 말해요"}</div><b>${esc(x.e)}</b>
+        <div class="en" style="margin-top:6px">${tappable(x.x, x.e)}</div><div class="acts">${sayBtns(x.x)}</div>${x.n ? `<div class="small muted">💡 ${esc(x.n)}</div>` : ""}</div>`}
         ${ok || kind === "test" ? `<button class="btn primary big" id="curNext" style="width:100%;margin-top:8px">다음 ›</button>${ok && kind === "new" ? '<button class="lnk small" id="curUnsure" style="margin-top:4px">사실 헷갈렸어요 → 훈련 목록에 넣기</button>' : ""}`
         : `<div class="cur-train"><b class="small">훈련 1/2 · 예문을 듣고 따라 말하기</b><div id="curT1" class="small" style="min-height:20px"></div>
            <div class="row" style="gap:6px"><button class="btn" id="curListen">🔊 듣기</button><button class="btn primary" id="curShadow" style="flex:1">🎙 따라 말하기</button></div>
-           <div id="curT2wrap" hidden><b class="small">훈련 2/2 · 뜻만 보고 다시 말하기: ${esc(x.k)}</b><div id="curT2" class="small" style="min-height:20px"></div><button class="btn primary" id="curAgain" style="width:100%">🎙 다시 말하기</button></div>
+           <div id="curT2wrap" hidden><b class="small">훈련 2/2 · 뜻만 보고 다시 말하기: ${esc(x.k)}${x.g ? ` (${esc(x.gs.rule)})` : ""}</b><div id="curT2" class="small" style="min-height:20px"></div><button class="btn primary" id="curAgain" style="width:100%">🎙 다시 말하기</button></div>
            <button class="btn" id="curNext" style="width:100%;margin-top:8px">다음 ›</button></div>`}`;
       speak(x.x);
       $("#curNext").onclick = () => { i++; step(); };
+      const go2 = box.querySelector("[data-gram-open]"); if (go2) go2.onclick = () => gramOpen(go2.dataset.gramOpen);
       const un = $("#curUnsure"); if (un) un.onclick = () => { const c = S.cur.items[x.id]; c.st = "train"; c.box = 0; c.due = addDays(today(), 1); c.at = new Date().toISOString(); curToReview(x); un.outerHTML = '<span class="small muted">훈련 목록에 넣었어요 (내일 복습)</span>'; };
       if (!ok && kind !== "test") {
         $("#curListen").onclick = () => speak(x.x);
@@ -1660,7 +1704,8 @@ function curSession(queueIn, title) {
   };
   const finish = () => {
     const t2 = curTodayLeft();
-    box.innerHTML = `<div class="result ok" style="text-align:center"><div class="score">${res.ok}/${queue.length}</div><p>${title ? "끝!" : "오늘 학습 끝!"} 바로 말한 표현 ${res.ok}개, 훈련한 표현 ${res.bad}개</p>
+    const gq = queue.filter((q) => q.x.g), gs = [...new Set(gq.map((q) => q.x.gs.name))];
+    box.innerHTML = `<div class="result ok" style="text-align:center"><div class="score">${res.ok}/${queue.length}</div><p>${title ? "끝!" : "오늘 학습 끝!"} 바로 말한 표현 ${res.ok}개, 훈련한 표현 ${res.bad}개</p>${gq.length ? `<p class="small">🧩 오늘의 문법 ${gq.length}문장 · ${esc(gs.join(", "))}</p>` : ""}
       <p class="small muted">훈련한 표현은 1·3·7·14·30일 뒤에 다시 물어봐요.${t2.left ? ` 아직 ${t2.left}개 남았어요.` : ""}</p></div>
       <div class="row" style="gap:6px;margin-top:10px">${!queueIn && !t2.left ? '<button class="btn" id="curMore2">+10개 더</button>' : ""}<button class="btn primary big" id="curClose" style="flex:1">닫기</button></div>`;
     $("#curClose").onclick = () => { closeSheet(); render(); };
@@ -1669,6 +1714,11 @@ function curSession(queueIn, title) {
   step();
 }
 /** 역할극 목표 표현 최대 3개: 복습이 다가온 훈련 표현 → 최근 7일에 처음 본 표현 (매번 조금씩 바뀌게 섞음) */
+function gramOpen(key) {
+  const [kind, id] = String(key).split(":"); if (!kind) return;
+  trainMode = kind; if (kind === "verb") verbPick = id; else if (kind === "form") formPick = +id; else tensePick = id;
+  closeSheet(); go("train");
+}
 function curRoleTargets() {
   if (!CUR_LIST.length || !S.cur) return [];
   const since = addDays(today(), -7), sh = (a) => a.map((x) => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map((p) => p[1]);
@@ -1699,7 +1749,8 @@ function curTest() {
 }
 function curMap() {
   const C = window.CURRICULUM || [], nx = curNext(1)[0];
-  openSheet(`<h2>📘 커리큘럼 전체 지도</h2><p class="small muted">순서대로 하루 ${CUR_DAILY}개. 바로 말한 표현은 통과, 모르는 표현은 훈련 뒤 1·3·7·14·30일 간격으로 다시 물어봐요.</p>
+  openSheet(`<h2>📘 커리큘럼 전체 지도</h2><p class="small muted">순서대로 하루 ${CUR_DAILY}개 + 문법 ${GRAM_DAILY}문장. 바로 말한 표현은 통과, 모르는 표현은 훈련 뒤 1·3·7·14·30일 간격으로 다시 물어봐요.</p>
+    <div class="cur-gmap">${GRAM_SETS.map((g) => { const xs = GRAM_LIST.filter((x) => x.gkey === g.key), sn = xs.filter((x) => curSt(x.id)).length; return `<button class="chip ${sn === xs.length ? "on" : ""}" data-gram-open="${esc(g.key)}" title="단원 ${g.ui + 1}과 함께">${esc(g.name)} <small>${sn}/${xs.length}</small></button>`; }).join("")}</div>
     <div class="cur-map">${C.map((u, ui) => { const xs = CUR_LIST.filter((x) => x.ui === ui), c = (s) => xs.filter((x) => (curSt(x.id) || {}).st === s).length, seen = xs.filter((x) => curSt(x.id)).length;
       return `<details class="cur-unit ${nx && nx.ui === ui ? "now" : ""}"><summary><span>${ui + 1}. ${esc(u.t)}</span><span class="small muted">${seen}/25${c("train") ? ` · 훈련 ${c("train")}` : ""}</span><i class="cur-bar mini"><i style="width:${(seen / 25) * 100}%"></i></i></summary>
         <ul>${xs.map((x) => { const s2 = (curSt(x.id) || {}).st; return `<li class="${s2 || "new"}"><span>${s2 === "train" ? "🔁" : s2 === "learned" ? "⭐" : s2 === "pass" ? "✓" : "·"}</span> <b>${esc(x.e)}</b> <small class="muted">${esc(x.k)}</small> <button class="act" data-say="${esc(x.x)}">🔊</button></li>`; }).join("")}</ul></details>`; }).join("")}</div>
@@ -2125,6 +2176,7 @@ function trainChip(key, label, on) {
   return `<button class="chip trc ${on ? "on" : ""} ${t.n >= 3 && acc < 60 ? "weak" : ""}" data-k="${esc(key.split(":")[1])}" title="${t.n ? `정답률 ${acc}% · ${t.n}문장` : "아직 연습 전"}"><span>${esc(label)}</span><i style="--w:${Math.max(0, acc)}%"></i></button>`;
 }
 function renderTrain(v) {
+  { const g = gramToday(); if (g && !renderTrain.init) { renderTrain.init = 1; trainMode = g.kind; if (g.kind === "verb") verbPick = g.id; else if (g.kind === "form") formPick = +g.id; else tensePick = g.id; } }
   verbPick = verbPick || VERBS[dayNum(today()) % VERBS.length].v;
   formPick = formPick || (dayNum(today()) % 5) + 1;
   tensePick = tensePick || TENSES[dayNum(today()) % TENSES.length].id;
@@ -2154,6 +2206,8 @@ function renderTrain(v) {
       <div class="row spread"><h2>${esc(isVerb ? set.v : set.name)}</h2>${acc !== null ? `<span class="tag ${acc >= 80 ? "good" : acc < 60 ? "bad" : ""}">정답률 ${acc}% · ${st.n}문장</span>` : `<span class="small muted">아직 연습 전</span>`}</div>
       ${isTense ? (set.ko.replace(/\s/g, "") === set.name.replace(/\s/g, "") ? "" : `<p class="verb-core">${esc(set.ko)}</p>`) : `<p class="verb-core">${esc(isVerb ? "핵심 이미지: " + set.core : set.desc)}</p>`}
       ${isVerb ? `<div class="row wrap" style="margin-top:6px">${sayBtns(set.v)}<a class="act yg" href="${ygUrl(set.v)}" target="_blank" rel="noopener">▶ ${esc(set.v)} 실제 예문</a></div>` : ""}
+      ${(() => { const xs = GRAM_LIST.filter((x) => x.gkey === key); if (!xs.length) return ""; const sn = xs.filter((x) => curSt(x.id)).length, tr = xs.filter((x) => (curSt(x.id) || {}).st === "train").length, g = xs[0].gs, cu = (window.CURRICULUM || [])[g.ui];
+        return `<p class="small muted" style="margin:6px 0 0">📘 오늘의 커리큘럼 연동 · ${cu && UNIT_GRAM[cu.id] && UNIT_GRAM[cu.id].includes(key) ? `단원 ${g.ui + 1}(${esc(cu.t)}) 주제와 함께 · ` : ""}${sn}/${xs.length}문장 훈련${tr ? ` · 복습 중 ${tr}` : ""}${gramToday() && gramToday().key === key ? ' · <b>오늘 커리큘럼 문법</b>' : ""}</p>`; })()}
       <div class="visual">${visual}</div>
       <div class="row" style="margin-top:12px"><button class="btn primary" id="trQuiz" style="flex:1">✍️ 영작 퀴즈 ${items.length}문장</button><button class="btn" id="trMore">＋ AI 새 문장</button></div>
       <div id="trQ"></div>

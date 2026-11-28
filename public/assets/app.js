@@ -1414,17 +1414,112 @@ function weeklyGoals() {
   for (const k of Object.keys(S.done)) { const m = k.match(/^(speak|write):(\d{4}-\d\d-\d\d):/); if (m && m[2] >= mon && m[2] <= end) cnt[m[1]]++; }
   return cnt;
 }
-function heatmapHtml() {
-  const mon = addDays(weekMonday(), -77), cells = [];
-  const tot = (d) => Object.values(S.history[d] || {}).reduce((a, b) => a + b, 0);
-  for (let i = 0; i < 84; i++) {
-    const d = addDays(mon, i), n = tot(d), lv = d > today() ? "f" : n === 0 ? 0 : n < 5 ? 1 : n < 15 ? 2 : n < 30 ? 3 : 4;
-    cells.push(`<i class="hm l${lv}" title="${d} · ${n}문장"></i>`);
+// ── 학습 달력: 해당 월의 실제 달력(월~일) + 월간 성과 ──
+const SENT_KINDS = ["speak", "write", "drill", "review", "shadow", "dictation", "weak", "cur"];
+/** 하루 연습 문장 수: 문장 단위 연습 + 독백·역할극은 1회를 6문장으로 */
+const daySent = (x = {}) => SENT_KINDS.reduce((a, k) => a + (x[k] || 0), 0) + (x.mono || 0) * 6 + (x.roleplay || 0) * 6;
+/** 오늘의 할 일 4가지(스피킹 12·독백 1·영작 10·동사/5형식 10) 중 끝낸 개수 */
+const dayGoalN = (x = {}) => [(x.speak || 0) >= 12, (x.mono || 0) >= 1, (x.write || 0) >= 10, (x.drill || 0) >= 10].filter(Boolean).length;
+const isActiveDay = (d) => Object.values(S.history[d] || {}).some((v) => v > 0);
+const ACT_LABEL = [["speak", "스피킹"], ["cur", "커리큘럼"], ["write", "영작"], ["drill", "동사·5형식"], ["review", "복습"], ["shadow", "따라 말하기"], ["dictation", "받아쓰기"], ["weak", "약점 연습"], ["mono", "독백"], ["roleplay", "역할극"]];
+const WD_KO = ["일", "월", "화", "수", "목", "금", "토"];
+const wdOf = (d) => new Date(d + "T12:00:00Z").getUTCDay();
+const monthDays = (m) => { const [y, mo] = m.split("-").map(Number), n = new Date(Date.UTC(y, mo, 0)).getUTCDate(); return [...Array(n)].map((_, i) => `${m}-${String(i + 1).padStart(2, "0")}`); };
+const shiftMonth = (m, k) => { const [y, mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo - 1 + k, 1)).toISOString().slice(0, 7); };
+const monthLabel = (m) => `${m.slice(0, 4)}년 ${+m.slice(5)}월`;
+const mdShort = (d) => `${+d.slice(5, 7)}/${+d.slice(8)}`;
+/** 기록을 세기 시작하는 날(앱 시작일과 첫 기록일 중 이른 날): 그 전 날짜는 '안 한 날'로 세지 않는다 */
+function calStart() {
+  const first = Object.keys(S.history).filter(isActiveDay).sort()[0], made = S.created || today();
+  return first && first < made ? first : made;
+}
+let calMonth = "", calSel = "";
+function monthStats(m, withPrev = true) {
+  const t = today(), from = calStart(), all = monthDays(m), H = (d) => S.history[d] || {};
+  const days = all.filter((d) => d >= from && d <= t);   // 앱을 쓰기 시작한 뒤 지나간 날
+  const act = days.filter(isActiveDay), goal = days.filter((d) => dayGoalN(H(d)) >= 3);
+  const sent = days.reduce((a, d) => a + daySent(H(d)), 0), sum = (k) => days.reduce((a, d) => a + (H(d)[k] || 0), 0);
+  let run = 0, streak = 0; for (const d of days) { if (isActiveDay(d)) { run++; streak = Math.max(streak, run); } else run = 0; }
+  const kinds = ACT_LABEL.map(([k, l]) => [l, sum(k) * (k === "mono" || k === "roleplay" ? 6 : 1), sum(k), k]).filter((x) => x[2] > 0);
+  const wk = new Map();   // 월요일 기준 주 단위
+  for (const d of all) { const mon = addDays(d, -((wdOf(d) + 6) % 7)); const w = wk.get(mon) || { first: d, last: d, sent: 0, act: 0, n: 0 }; w.last = d; if (d >= from && d <= t) { w.n++; w.sent += daySent(H(d)); if (isActiveDay(d)) w.act++; } wk.set(mon, w); }
+  const byWd = [0, 0, 0, 0, 0, 0, 0]; for (const d of days) byWd[wdOf(d)] += daySent(H(d));
+  const bestWd = sent ? byWd.indexOf(Math.max(...byWd)) : -1;
+  const bestDay = days.reduce((a, d) => (daySent(H(d)) > daySent(H(a || d)) ? d : a), "");
+  const rv = days.filter((d) => d >= "2026-11-25").reduce((a, d) => a + (H(d).review || 0), 0), rok = days.filter((d) => d >= "2026-11-25").reduce((a, d) => a + (H(d).review_ok || 0), 0);
+  const st = { m, all, days, act, goal, sent, streak, kinds, weeks: [...wk.values()], bestWd, bestDay, mast: sum("mastered"), mono: sum("mono"), words: sum("words"),
+    rate: days.length ? act.length / days.length : 0, goalRate: days.length ? goal.length / days.length : 0, perDay: act.length ? Math.round(sent / act.length) : 0,
+    review: rv ? Math.round((rok / rv) * 100) : null, prev: null };
+  if (withPrev) { const ps = monthStats(shiftMonth(m, -1), false); if (ps.act.length) st.prev = ps; }
+  return st;
+}
+function calGrade(r, n, act) {
+  if (!n) return ["", "아직 기록이 없어요"];
+  if (!act) return ["📝", "아직 시작 전이에요 — 오늘 한 문장부터!"];
+  return r >= 0.8 ? ["🔥", "아주 잘하고 있어요"] : r >= 0.5 ? ["👍", "꾸준히 하고 있어요"] : r >= 0.25 ? ["🙂", "시작이 좋아요, 조금만 더"] : ["🌱", "가볍게 시작한 달이에요"];
+}
+function calDetailHtml(d) {
+  const x = S.history[d] || {}, n = daySent(x), g = dayGoalN(x);
+  const parts = ACT_LABEL.filter(([k]) => x[k] > 0).map(([k, l]) => `<span class="chip ghost">${l} ${x[k]}${k === "mono" || k === "roleplay" ? "번" : ""}</span>`).join("");
+  const extra = [x.review ? `복습 정답 ${x.review_ok || 0}/${x.review}` : "", x.mastered ? `완전히 익힘 ${x.mastered}` : ""].filter(Boolean).join(" · ");
+  return `<div class="cal-detail"><b>${mdShort(d)}(${WD_KO[wdOf(d)]})</b> · ${n ? `연습 ${n}문장 · 오늘의 할 일 ${g}/4` : "쉬었어요"}
+    ${n ? `<div class="chips cal-chips">${parts}</div>${extra ? `<div class="small muted">${extra}</div>` : ""}` : ""}</div>`;
+}
+function renderCalendar() {
+  const box = $("#calCard"); if (!box) return;
+  const t = today(), cur = t.slice(0, 7), min = calStart().slice(0, 7);
+  if (!calMonth || calMonth > cur || calMonth < min) calMonth = cur;
+  const m = calMonth, ms = monthStats(m), all = ms.all, from = calStart();
+  const tier = (n) => (n === 0 ? 0 : n < 5 ? 1 : n < 15 ? 2 : n < 30 ? 3 : 4);
+  const cells = [...Array((wdOf(all[0]) + 6) % 7)].map(() => '<i class="cal-b"></i>');
+  for (const d of all) {
+    const x = S.history[d] || {}, n = daySent(x), fut = d > t, pre = d < from, goal = dayGoalN(x) >= 3;
+    const cls = ["cal-d", "l" + tier(n), d === t ? "today" : "", fut ? "fut" : "", pre ? "pre" : "", goal ? "goal" : "", d === calSel ? "sel" : ""].filter(Boolean).join(" ");
+    cells.push(`<button type="button" class="${cls}" data-cd="${d}" ${fut ? "disabled" : ""} aria-label="${+d.slice(5, 7)}월 ${+d.slice(8)}일 ${n}문장${goal ? " 목표 달성" : ""}"><b>${+d.slice(8)}</b><span>${n || ""}</span></button>`);
   }
-  // 열 = 주(월~일), 첫 열이 가장 오래된 주
-  const cols = []; for (let w = 0; w < 12; w++) cols.push(cells.slice(w * 7, w * 7 + 7).join(""));
-  return `<div class="heat">${cols.map((c) => `<div class="hw">${c}</div>`).join("")}</div>
-    <div class="row small muted" style="justify-content:flex-end;gap:4px;margin-top:6px">적음 <i class="hm l0"></i><i class="hm l1"></i><i class="hm l2"></i><i class="hm l3"></i><i class="hm l4"></i> 많음</div>`;
+  const pct = (r) => Math.round(r * 100), g = calGrade(ms.rate, ms.days.length, ms.act.length);
+  const mx = Math.max(10, ...ms.weeks.map((w) => w.sent));
+  const weeks = ms.weeks.map((w, i) => `<div class="${w.n ? "" : "off"}" title="${mdShort(w.first)}~${mdShort(w.last)}"><b class="small">${w.n ? w.sent : "–"}</b><i style="height:${w.n ? (w.sent / mx) * 56 + 3 : 3}px"></i><span>${i + 1}주<small>${w.n ? w.act + "/" + w.n + "일" : ""}</small></span></div>`).join("");
+  const kmx = Math.max(1, ...ms.kinds.map((k) => k[1]));
+  const kinds = ms.kinds.sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l, w, n, k]) => `<div class="hb"><span>${l}</span><i><u style="width:${(w / kmx) * 100}%"></u></i><b>${n}${k === "mono" || k === "roleplay" ? "번" : ""}</b></div>`).join("");
+  const notes = [];
+  if (ms.prev) { const a = pct(ms.prev.rate), b = pct(ms.rate), up = b - a; notes.push(`지난달(${+ms.prev.m.slice(5)}월) 공부한 날 ${a}% → ${b}% <b class="${up >= 0 ? "up" : "down"}">${up >= 0 ? "▲" : "▼"} ${Math.abs(up)}%p</b>${m === cur ? " (지금까지 기준)" : ""}`); }
+  if (ms.bestDay) notes.push(`가장 많이 한 날 <b>${mdShort(ms.bestDay)}(${WD_KO[wdOf(ms.bestDay)]})</b> ${daySent(S.history[ms.bestDay])}문장`);
+  if (ms.bestWd >= 0) notes.push(`가장 열심히 한 요일 <b>${WD_KO[ms.bestWd]}요일</b>`);
+  const strip = []; for (let k = Math.min(5, Math.max(0, (+cur.slice(0, 4) - +min.slice(0, 4)) * 12 + (+cur.slice(5) - +min.slice(5)))); k >= 0; k--) {
+    const mm = shiftMonth(cur, -k), st = monthStats(mm, false);
+    strip.push(`<button type="button" class="cal-mo${mm === m ? " on" : ""}" data-cm="${mm}" aria-label="${monthLabel(mm)} 공부한 날 ${st.act.length}일"><i style="height:${st.days.length ? Math.max(3, st.rate * 30) : 3}px"></i><b>${+mm.slice(5)}월</b><small>${st.days.length ? st.act.length + "일" : "–"}</small></button>`);
+  }
+  box.innerHTML = `
+    <div class="row spread"><h3>학습 달력</h3>
+      <div class="cal-nav"><button class="btn sm ghost" data-cn="-1" aria-label="이전 달" ${m <= min ? "disabled" : ""}>◀</button><b>${monthLabel(m)}</b><button class="btn sm ghost" data-cn="1" aria-label="다음 달" ${m >= cur ? "disabled" : ""}>▶</button></div></div>
+    <div class="cal-week" aria-hidden="true">${["월", "화", "수", "목", "금", "토", "일"].map((w) => `<span>${w}</span>`).join("")}</div>
+    <div class="cal-grid">${cells.join("")}</div>
+    <div class="row small muted cal-legend"><span>칸 안 숫자 = 연습 문장 · ✓ = 목표 달성일</span><span>적음 <i class="hm l0"></i><i class="hm l1"></i><i class="hm l2"></i><i class="hm l3"></i><i class="hm l4"></i> 많음</span></div>
+    <div id="calDetail">${calSel && calSel.startsWith(m) ? calDetailHtml(calSel) : ""}</div>
+    <div class="cal-sum">
+      <div class="row spread"><h3>${+m.slice(5)}월 성과</h3><span class="small muted">${ms.days.length ? `기록 ${ms.days.length}일 중` : ""}</span></div>
+      ${ms.days.length ? `<div class="cal-grade"><span class="cal-gi">${g[0]}</span><div><b>${g[1]}</b><div class="small muted">공부한 날 <b>${ms.act.length}</b> / ${ms.days.length}일 (${pct(ms.rate)}%)${ms.days.length < all.length ? "" : ""}</div></div></div>
+      <div class="dayprog" role="progressbar" aria-valuenow="${pct(ms.rate)}" aria-valuemin="0" aria-valuemax="100" aria-label="공부한 날 비율"><i style="width:${pct(ms.rate)}%"></i></div>
+      <div class="stats cal-stats">
+        <div class="stat"><b>${ms.goal.length}일</b><span>목표 달성일<small>4가지 중 3개 이상</small></span></div>
+        <div class="stat"><b>${ms.sent}</b><span>연습 문장<small>하루 평균 ${ms.perDay}</small></span></div>
+        <div class="stat"><b>${ms.streak}일</b><span>최장 연속</span></div>
+      </div>
+      <div class="wrrow small"><span>🎙 독백 <b>${ms.mono}</b>번</span><span>✅ 완전히 익힘 <b>${ms.mast}</b></span>${ms.review != null ? `<span>🔁 복습 정답률 <b>${ms.review}%</b></span>` : ""}${ms.words ? `<span>📒 단어 저장 <b>${ms.words}</b></span>` : ""}</div>
+      <div class="bars7 cal-weeks">${weeks}</div><p class="small muted" style="margin:2px 0 0">주별 연습 문장 (아래: 공부한 날/지난 날, 월~일 기준)</p>
+      ${kinds ? `<div class="cal-kinds">${kinds}</div>` : ""}
+      ${notes.length ? `<ul class="wrtips small">${notes.map((x) => `<li>${x}</li>`).join("")}</ul>` : ""}
+      <p class="small muted" style="margin:6px 0 0">목표 달성일 = 스피킹 12 · 독백 1 · 영작 10 · 동사/5형식 10 중 3가지 이상 끝낸 날. 앱을 쓰기 시작한 날(${esc(mdShort(from))}) 이전은 세지 않아요.</p>`
+      : `<p class="small muted" style="margin:6px 0 0">${m > cur ? "아직 오지 않은 달이에요." : "이 달에는 아직 기록이 없어요. 오늘부터 쌓이면 여기에 월간 성과가 나와요."}</p>`}
+    </div>
+    ${strip.length > 1 ? `<div class="cal-strip" role="group" aria-label="월별 한눈에">${strip.join("")}</div>` : ""}`;
+  box.onclick = (e) => {
+    const n = e.target.closest("[data-cn]"), d = e.target.closest("[data-cd]"), mo = e.target.closest("[data-cm]");
+    if (n && !n.disabled) { calMonth = shiftMonth(calMonth, +n.dataset.cn); calSel = ""; renderCalendar(); }
+    else if (mo) { calMonth = mo.dataset.cm; calSel = ""; renderCalendar(); }
+    else if (d && !d.disabled) { calSel = calSel === d.dataset.cd ? "" : d.dataset.cd; renderCalendar(); }
+  };
 }
 function reviewStatsHtml() {
   const act = S.wrong.filter((w) => !w.del), mastered = act.filter((w) => w.mastered).length;
@@ -1445,7 +1540,7 @@ function reviewStatsHtml() {
 function weeklyReportHtml() {
   const span = (from) => [...Array(7)].map((_, k) => addDays(today(), from + k));
   const cur = span(-6), prev = span(-13);
-  const sentOf = (x) => (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0) + (x.shadow || 0) + (x.dictation || 0) + (x.weak || 0) + (x.mono || 0) * 6 + (x.roleplay || 0) * 6;
+  const sentOf = daySent;
   const sum = (days, f) => days.reduce((a, d) => a + f(S.history[d] || {}), 0);
   const active = (days) => days.filter((d) => Object.values(S.history[d] || {}).some((v) => v > 0)).length;
   const sc = sum(cur, sentOf), sp = sum(prev, sentOf), ac = active(cur);
@@ -1788,7 +1883,7 @@ function renderHome(v) {
   const mx = Math.max(10, ...days.map(tot));
   const hour = +new Intl.DateTimeFormat("en-NZ", { hour: "numeric", hour12: false, timeZone: "Pacific/Auckland" }).format(new Date());
   const greet = hour < 12 ? "Morning! ☀️" : hour < 18 ? "Kia ora! 👋" : "Evening! 🌙";
-  const totalSentences = Object.values(S.history).reduce((a, x) => a + (x.speak || 0) + (x.write || 0) + (x.drill || 0) + (x.review || 0) + (x.mono || 0) * 6, 0);
+  const totalSentences = Object.values(S.history).reduce((a, x) => a + daySent(x), 0);
   const parts = [["speak", speakN / 12], ["mono", (h.mono || 0) ? 1 : 0], ["write", writeN / 10], ["train", Math.min(drillN / 10, 1)], ["vault", due ? 0 : 1]];
   const todayPct = Math.round((parts.reduce((a, [, x]) => a + x, 0) / parts.length) * 100), nextGo = (parts.find(([, x]) => x < 1) || [""])[0];
   // 아직 기록이 없는 통계 카드는 하나로 묶어 짧게 (기록이 생기면 각 카드로 나옴)
@@ -1828,12 +1923,13 @@ function renderHome(v) {
     ${statCard("mono", `<div class="card"><div class="row spread"><h3>독백 낭독 기록</h3><button class="btn sm" data-go="mono">낭독하기</button></div>${monoStatsHtml()}</div>`)}
     ${emptyKeys.length ? `<div class="card soon-card"><h3>📈 연습하면 여기에 쌓여요</h3><div class="chips" style="margin-top:6px">${emptyKeys.map((k) => `<span class="chip ghost">${EMPTY_NAME[k]}</span>`).join("")}</div>
       <p class="small muted" style="margin:6px 0 0">스피킹·영작·독백을 하면 진행 그래프, 복습 정답률, 자주 틀리는 유형이 하나씩 열려요.</p></div>` : ""}
-    <div class="card"><h3>학습 달력 <small class="muted">최근 12주</small></h3>${heatmapHtml()}</div>
+    <div class="card" id="calCard"></div>
     <div class="card">
       <h3>이 말, 영어로 뭐라고 하지?</h3>
       <p class="small muted" style="margin:4px 0 8px">한국어를 쓰면 원어민 말투로 바꿔 드려요.</p>
       <div class="row"><input class="text" id="qConv" placeholder="예: 우리 애가 오늘 좀 피곤해 보여요"><button class="btn primary" id="qConvGo">변환</button></div>
     </div>`;
+  renderCalendar();
   v.querySelectorAll("[data-go]").forEach((t) => (t.onclick = () => go(t.dataset.go)));
   { const nx = nextGo && v.querySelector(`.task[data-go="${nextGo}"]`); if (nx) { nx.classList.add("next"); nx.querySelector(".t b").insertAdjacentHTML("beforeend", ' <span class="nexttag">다음</span>'); } }
   v.querySelectorAll("[data-weak]").forEach((b) => (b.onclick = () => weakPractice(b.dataset.weak)));
